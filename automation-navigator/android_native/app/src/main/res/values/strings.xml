@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Automation Navigator</string>
+    <string name="accessibility_service_label">Automation Navigator</string>
+    <string name="accessibility_service_description">Allows Automation Navigator to tap, swipe, and read your screen to run your saved automation sequences.</string>
+</resources>
