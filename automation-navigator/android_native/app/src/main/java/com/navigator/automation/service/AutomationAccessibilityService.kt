@@ -76,6 +76,11 @@ class AutomationAccessibilityService : AccessibilityService() {
         return tapCoords(rect.exactCenterX(), rect.exactCenterY())
     }
 
+    /** Click via accessibility ACTION_CLICK — more reliable for standard Android buttons. */
+    fun clickNode(node: AccessibilityNodeInfo): Boolean {
+        return node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+    }
+
     fun tapCoords(x: Float, y: Float): Boolean {
         val path = Path().apply { moveTo(x, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, 50)

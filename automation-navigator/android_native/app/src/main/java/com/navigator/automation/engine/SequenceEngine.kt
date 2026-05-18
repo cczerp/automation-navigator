@@ -93,6 +93,13 @@ class SequenceEngine(
                 }
             }
 
+            is Step.TapButton -> {
+                withContext(Dispatchers.Default) {
+                    val node = retryFind(svc, step.text)
+                    if (node != null) svc.clickNode(node)
+                }
+            }
+
             is Step.WaitSeconds -> delay((step.seconds * 1000).toLong())
 
             is Step.TypeText -> withContext(Dispatchers.Default) { svc.typeText(step.text) }
