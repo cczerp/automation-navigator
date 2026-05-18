@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+venv/
+.env
+
+# Kivy/Buildozer artifacts
+android_app/.buildozer/
+android_app/bin/
+
+# Android build outputs
+android_native/.gradle/
+android_native/app/build/
+android_native/build/
+*.apk
+*.aab
+
+# Android SDK (downloaded locally, not part of the project)
+/android-sdk/
+
+# macOS / Linux junk
+.DS_Store
+*.swp
