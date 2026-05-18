@@ -18,6 +18,10 @@ class AutomationAccessibilityService : AccessibilityService() {
         var instance: AutomationAccessibilityService? = null
             private set
 
+        // Exposed so RunScreen can observe status without binding to the service
+        var currentEngine: SequenceEngine? = null
+            private set
+
         const val ACTION_RUN      = "com.navigator.automation.RUN"
         const val ACTION_STOP     = "com.navigator.automation.STOP"
         const val ACTION_PAUSE    = "com.navigator.automation.PAUSE"
@@ -27,6 +31,7 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     private val serviceScope = CoroutineScope(Dispatchers.Default + SupervisorJob())
     private var engine: SequenceEngine? = null
+        set(value) { field = value; currentEngine = value }
 
     // ── Lifecycle ────────────────────────────────────────────────────────────
 

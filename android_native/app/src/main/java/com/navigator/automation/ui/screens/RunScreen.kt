@@ -1,5 +1,6 @@
 package com.navigator.automation.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -12,9 +13,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.navigator.automation.engine.*
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
+import com.navigator.automation.service.AutomationAccessibilityService
+import kotlinx.coroutines.delay
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -25,19 +25,28 @@ fun RunScreen(
     val context  = LocalContext.current
     val sequence = remember(sequenceName) { SequenceRepository.load(context, sequenceName) }
 
-    // Engine lives for the lifetime of this composable
-    val engineScope = remember { CoroutineScope(Dispatchers.Default + SupervisorJob()) }
-    val engine = remember(sequence) {
-        sequence?.let { SequenceEngine(context, it, engineScope) }
+    // Send the sequence to the accessibility service to run — it keeps going even when
+    // this screen is off screen (e.g. while the automated app is in the foreground).
+    LaunchedEffect(sequence) {
+        if (sequence == null) return@LaunchedEffect
+        val svc = AutomationAccessibilityService.instance
+        if (svc == null) return@LaunchedEffect
+        val intent = Intent(context, AutomationAccessibilityService::class.java).apply {
+            action = AutomationAccessibilityService.ACTION_RUN
+            putExtra(AutomationAccessibilityService.EXTRA_SEQUENCE, sequence.toJson().toString())
+        }
+        context.startService(intent)
     }
 
-    val status by (engine?.status ?: return).collectAsState()
-
-    // Auto-start
-    LaunchedEffect(engine) { engine?.start() }
-
-    // Cleanup when leaving
-    DisposableEffect(engine) { onDispose { engine?.stop() } }
+    // Poll the service engine status — the engine lives in the service, not here,
+    // so this keeps showing live updates even after we navigate back and return.
+    var status by remember { mutableStateOf(EngineStatus(totalSteps = sequence?.steps?.size ?: 0)) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            AutomationAccessibilityService.currentEngine?.status?.value?.let { status = it }
+            delay(200)
+        }
+    }
 
     val stateColor = when (status.state) {
         RunState.RUNNING -> MaterialTheme.colorScheme.primary
@@ -52,22 +61,44 @@ fun RunScreen(
             TopAppBar(
                 title = { Text(sequenceName) },
                 navigationIcon = {
-                    IconButton(onClick = { engine?.stop(); onBack() }) {
+                    IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, "Back")
                     }
                 }
             )
         }
     ) { padding ->
+
+        if (sequence == null) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Text("Sequence not found", color = MaterialTheme.colorScheme.error)
+            }
+            return@Scaffold
+        }
+
+        if (AutomationAccessibilityService.instance == null) {
+            Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally,
+                       verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(Icons.Default.Warning, null,
+                        tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(48.dp))
+                    Text("Accessibility Service is not enabled",
+                        fontWeight = FontWeight.Medium)
+                    Text("Go to Settings → enable it, then come back.",
+                        fontSize = 13.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                }
+            }
+            return@Scaffold
+        }
+
         Column(
             modifier = Modifier.fillMaxSize().padding(padding).padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(24.dp)
         ) {
-
             Spacer(Modifier.height(16.dp))
 
-            // Big state indicator
             Text(
                 status.state.name,
                 fontSize = 32.sp,
@@ -75,7 +106,6 @@ fun RunScreen(
                 color = stateColor
             )
 
-            // Progress
             if (status.totalSteps > 0) {
                 val progress = (status.currentStep + 1).toFloat() / status.totalSteps
                 LinearProgressIndicator(
@@ -91,7 +121,6 @@ fun RunScreen(
                 )
             }
 
-            // Current step label
             if (status.message.isNotEmpty()) {
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Text(
@@ -104,16 +133,22 @@ fun RunScreen(
 
             Spacer(Modifier.weight(1f))
 
-            // Controls
             when (status.state) {
                 RunState.RUNNING -> Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    OutlinedButton(onClick = { engine?.pause() }) {
+                    OutlinedButton(onClick = {
+                        context.startService(Intent(context, AutomationAccessibilityService::class.java)
+                            .apply { action = AutomationAccessibilityService.ACTION_PAUSE })
+                    }) {
                         Icon(Icons.Default.Pause, null)
                         Spacer(Modifier.width(8.dp))
                         Text("Pause")
                     }
                     Button(
-                        onClick = { engine?.stop(); onBack() },
+                        onClick = {
+                            context.startService(Intent(context, AutomationAccessibilityService::class.java)
+                                .apply { action = AutomationAccessibilityService.ACTION_STOP })
+                            onBack()
+                        },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
                     ) {
                         Icon(Icons.Default.Stop, null)
@@ -122,12 +157,19 @@ fun RunScreen(
                     }
                 }
                 RunState.PAUSED -> Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-                    Button(onClick = { engine?.resume() }) {
+                    Button(onClick = {
+                        context.startService(Intent(context, AutomationAccessibilityService::class.java)
+                            .apply { action = AutomationAccessibilityService.ACTION_RESUME })
+                    }) {
                         Icon(Icons.Default.PlayArrow, null)
                         Spacer(Modifier.width(8.dp))
                         Text("Resume")
                     }
-                    OutlinedButton(onClick = { engine?.stop(); onBack() }) { Text("Stop") }
+                    OutlinedButton(onClick = {
+                        context.startService(Intent(context, AutomationAccessibilityService::class.java)
+                            .apply { action = AutomationAccessibilityService.ACTION_STOP })
+                        onBack()
+                    }) { Text("Stop") }
                 }
                 RunState.DONE, RunState.ERROR, RunState.IDLE ->
                     Button(onClick = onBack) {

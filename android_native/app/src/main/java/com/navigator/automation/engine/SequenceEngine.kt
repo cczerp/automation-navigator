@@ -111,7 +111,10 @@ class SequenceEngine(
                 }
             }
 
-            is Step.LaunchApp -> withContext(Dispatchers.Default) { svc.launchApp(step.target) }
+            is Step.LaunchApp -> {
+                withContext(Dispatchers.Default) { svc.launchApp(step.target) }
+                delay(2500) // let the app finish loading before next step
+            }
 
             is Step.WatchCorners -> {
                 // Scan for dismiss UI for up to timeoutSeconds
