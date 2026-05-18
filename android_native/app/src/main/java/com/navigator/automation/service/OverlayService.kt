@@ -6,26 +6,29 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Typeface
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
-import android.widget.FrameLayout
-import android.widget.ImageButton
+import android.widget.*
 import androidx.core.app.NotificationCompat
 import com.navigator.automation.MainActivity
 import com.navigator.automation.R
+import com.navigator.automation.engine.SequenceRepository
 
 class OverlayService : Service() {
 
     private lateinit var wm: WindowManager
-    private var overlayView: View? = null
+    private var fabView: View? = null
+    private var panelView: View? = null
 
     companion object {
-        private const val CHANNEL_ID   = "overlay_service"
-        private const val NOTIF_ID     = 1
+        private const val CHANNEL_ID = "overlay_service"
+        private const val NOTIF_ID   = 1
         var isRunning = false
             private set
     }
@@ -37,91 +40,210 @@ class OverlayService : Service() {
         isRunning = true
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         startForeground(NOTIF_ID, buildNotification())
-        showOverlay()
+        showFab()
     }
 
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
-        removeOverlay()
+        fabView?.let { wm.removeView(it) }
+        panelView?.let { wm.removeView(it) }
     }
 
-    // ── Overlay ───────────────────────────────────────────────────────────
+    // ── FAB ───────────────────────────────────────────────────────────────────
 
-    private fun showOverlay() {
+    private fun showFab() {
         val params = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
             PixelFormat.TRANSLUCENT
-        ).apply {
-            gravity = Gravity.TOP or Gravity.END
-            x = 16; y = 200
-        }
+        ).apply { gravity = Gravity.TOP or Gravity.END; x = 16; y = 220 }
 
-        val container = FrameLayout(this)
         val btn = ImageButton(this).apply {
             setImageResource(R.drawable.ic_play_circle)
             background = null
-            alpha = 0.85f
-            setPadding(12, 12, 12, 12)
-            setOnClickListener { openMainApp() }
+            alpha = 0.88f
+            setPadding(14, 14, 14, 14)
         }
 
-        // Drag to move
-        var dragX = 0; var dragY = 0; var startRawX = 0f; var startRawY = 0f
-        btn.setOnTouchListener { v, ev ->
+        // Drag vs tap detection
+        var dragX = 0; var dragY = 0
+        var startRawX = 0f; var startRawY = 0f
+        var moved = false
+
+        btn.setOnTouchListener { _, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
                     dragX = params.x; dragY = params.y
                     startRawX = ev.rawX; startRawY = ev.rawY
-                    false
+                    moved = false; false
                 }
                 MotionEvent.ACTION_MOVE -> {
-                    params.x = (dragX - (ev.rawX - startRawX)).toInt()
-                    params.y = (dragY + (ev.rawY - startRawY)).toInt()
-                    wm.updateViewLayout(container, params)
+                    val dx = ev.rawX - startRawX
+                    val dy = ev.rawY - startRawY
+                    if (moved || dx * dx + dy * dy > 100) {
+                        moved = true
+                        params.x = (dragX - dx).toInt()
+                        params.y = (dragY + dy).toInt()
+                        wm.updateViewLayout(btn.parent as View, params)
+                    }
                     true
+                }
+                MotionEvent.ACTION_UP -> {
+                    if (!moved) togglePanel()
+                    false
                 }
                 else -> false
             }
         }
 
+        val container = FrameLayout(this)
         container.addView(btn)
         wm.addView(container, params)
-        overlayView = container
+        fabView = container
     }
 
-    private fun removeOverlay() {
-        overlayView?.let { wm.removeView(it) }
-        overlayView = null
-    }
+    // ── Sequence picker panel ─────────────────────────────────────────────────
 
-    private fun openMainApp() {
-        val intent = Intent(this, MainActivity::class.java).apply {
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+    private fun togglePanel() {
+        if (panelView != null) { dismissPanel(); return }
+
+        val sequences = SequenceRepository.list(this)
+
+        val params = WindowManager.LayoutParams(
+            dpToPx(260),
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.TOP or Gravity.END; x = 16; y = 300 }
+
+        val panel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(Color.parseColor("#F3EDF7"))
+            elevation = 12f
         }
-        startActivity(intent)
+
+        // Header
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#6650A4"))
+            setPadding(dpToPx(14), dpToPx(10), dpToPx(10), dpToPx(10))
+        }
+        val title = TextView(this).apply {
+            text = "Run a sequence"
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val closeBtn = TextView(this).apply {
+            text = "✕"
+            setTextColor(Color.WHITE)
+            textSize = 18f
+            setPadding(dpToPx(8), 0, dpToPx(4), 0)
+            setOnClickListener { dismissPanel() }
+        }
+        header.addView(title)
+        header.addView(closeBtn)
+        panel.addView(header)
+
+        if (sequences.isEmpty()) {
+            val empty = TextView(this).apply {
+                text = "No sequences saved yet.\nOpen the app to create one."
+                setTextColor(Color.parseColor("#49454F"))
+                textSize = 13f
+                setPadding(dpToPx(16), dpToPx(16), dpToPx(16), dpToPx(16))
+            }
+            panel.addView(empty)
+        } else {
+            val scroll = ScrollView(this).apply {
+                layoutParams = LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    minOf(sequences.size * dpToPx(48), dpToPx(280))
+                )
+            }
+            val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+            sequences.forEach { name ->
+                val row = TextView(this).apply {
+                    text = "▶  $name"
+                    setTextColor(Color.parseColor("#1D1B20"))
+                    textSize = 14f
+                    setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+                    setOnClickListener {
+                        runSequence(name)
+                        dismissPanel()
+                    }
+                }
+                // Divider
+                val divider = View(this).apply {
+                    layoutParams = LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, 1
+                    )
+                    setBackgroundColor(Color.parseColor("#E6E1E5"))
+                }
+                list.addView(row)
+                list.addView(divider)
+            }
+
+            scroll.addView(list)
+            panel.addView(scroll)
+        }
+
+        // "Open app" footer
+        val footer = TextView(this).apply {
+            text = "Open Automation Navigator →"
+            setTextColor(Color.parseColor("#6650A4"))
+            textSize = 12f
+            setPadding(dpToPx(16), dpToPx(10), dpToPx(16), dpToPx(12))
+            setOnClickListener {
+                dismissPanel()
+                startActivity(Intent(this@OverlayService, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                })
+            }
+        }
+        panel.addView(footer)
+
+        wm.addView(panel, params)
+        panelView = panel
     }
 
-    // ── Notification ──────────────────────────────────────────────────────
+    private fun dismissPanel() {
+        panelView?.let { wm.removeView(it) }
+        panelView = null
+    }
+
+    private fun runSequence(name: String) {
+        val seq = SequenceRepository.load(this, name) ?: return
+        val intent = Intent(this, AutomationAccessibilityService::class.java).apply {
+            action = AutomationAccessibilityService.ACTION_RUN
+            putExtra(AutomationAccessibilityService.EXTRA_SEQUENCE, seq.toJson().toString())
+        }
+        startService(intent)
+    }
+
+    // ── Notification ──────────────────────────────────────────────────────────
 
     private fun buildNotification(): Notification {
         val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Overlay", NotificationManager.IMPORTANCE_LOW)
         )
-        val tapIntent = PendingIntent.getActivity(
-            this, 0,
-            Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+        val tap = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Automation Navigator")
-            .setContentText("Tap to open")
+            .setContentText("Tap the floating button to run sequences")
             .setSmallIcon(R.drawable.ic_play_circle)
-            .setContentIntent(tapIntent)
+            .setContentIntent(tap)
             .build()
     }
+
+    private fun dpToPx(dp: Int): Int =
+        (dp * resources.displayMetrics.density).toInt()
 }
