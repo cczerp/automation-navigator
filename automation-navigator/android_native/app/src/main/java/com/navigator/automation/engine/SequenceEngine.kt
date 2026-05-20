@@ -96,7 +96,10 @@ class SequenceEngine(
             is Step.TapButton -> {
                 withContext(Dispatchers.Default) {
                     val node = retryFind(svc, step.text)
-                    if (node != null) svc.clickNode(node)
+                    if (node != null) {
+                        // ACTION_CLICK works for standard views; gesture tap covers custom/non-standard buttons
+                        if (!svc.clickNode(node)) svc.tapNode(node)
+                    }
                 }
             }
 

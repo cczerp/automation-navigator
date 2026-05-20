@@ -15,8 +15,9 @@ android_native/build/
 *.apk
 *.aab
 
-# Android SDK (downloaded locally, not part of the project)
+# Android SDK / local device paths
 /android-sdk/
+android_native/local.properties
 
 # macOS / Linux junk
 .DS_Store
