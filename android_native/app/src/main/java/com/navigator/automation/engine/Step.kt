@@ -4,6 +4,8 @@ import org.json.JSONObject
 
 sealed class Step {
     data class TapText(val text: String) : Step()
+    data class TapCoords(val x: Float, val y: Float) : Step()
+    data class LongPress(val x: Float, val y: Float, val durationMs: Long = 500L) : Step()
     data class WaitSeconds(val seconds: Float) : Step()
     data class TypeText(val text: String) : Step()
     data class Swipe(val direction: String) : Step()   // up | down | left | right
@@ -17,6 +19,8 @@ sealed class Step {
 
     fun label(): String = when (this) {
         is TapText       -> "Tap: $text"
+        is TapCoords     -> "Tap (%.0f, %.0f)".format(x, y)
+        is LongPress     -> "Long press (%.0f, %.0f) ${durationMs}ms".format(x, y)
         is WaitSeconds   -> "Wait: ${seconds}s"
         is TypeText      -> "Type: $text"
         is Swipe         -> "Swipe $direction"
@@ -32,6 +36,8 @@ sealed class Step {
     fun toJson(): JSONObject = JSONObject().apply {
         when (val s = this@Step) {
             is TapText      -> { put("type", "click");         put("target", s.text) }
+            is TapCoords    -> { put("type", "tap_coords");    put("x", s.x); put("y", s.y) }
+            is LongPress    -> { put("type", "long_press");    put("x", s.x); put("y", s.y); put("duration_ms", s.durationMs) }
             is WaitSeconds  -> { put("type", "wait");          put("seconds", s.seconds) }
             is TypeText     -> { put("type", "type");          put("target", s.text) }
             is Swipe        -> { put("type", "swipe");         put("direction", s.direction) }
@@ -52,6 +58,12 @@ sealed class Step {
     companion object {
         fun fromJson(json: JSONObject): Step? = when (json.optString("type")) {
             "click"         -> TapText(json.optString("target"))
+            "tap_coords"    -> TapCoords(json.optDouble("x").toFloat(), json.optDouble("y").toFloat())
+            "long_press"    -> LongPress(
+                                   json.optDouble("x").toFloat(),
+                                   json.optDouble("y").toFloat(),
+                                   json.optLong("duration_ms", 500L)
+                               )
             "wait"          -> WaitSeconds(json.optDouble("seconds", 1.0).toFloat())
             "type"          -> TypeText(json.optString("target"))
             "swipe"         -> Swipe(json.optString("direction", "up"))

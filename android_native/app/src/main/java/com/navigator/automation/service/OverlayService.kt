@@ -19,18 +19,28 @@ import androidx.core.app.NotificationCompat
 import com.navigator.automation.MainActivity
 import com.navigator.automation.R
 import com.navigator.automation.engine.SequenceRepository
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class OverlayService : Service() {
 
     private lateinit var wm: WindowManager
     private var fabView: View? = null
     private var panelView: View? = null
+    private var recorderView: View? = null
 
     companion object {
         private const val CHANNEL_ID = "overlay_service"
         private const val NOTIF_ID   = 1
+        const val ACTION_RECORD_POSITION = "com.navigator.automation.RECORD_POSITION"
+
         var isRunning = false
             private set
+
+        private val _recordedCoords = MutableStateFlow<Pair<Float, Float>?>(null)
+        val recordedCoords: StateFlow<Pair<Float, Float>?> = _recordedCoords
+
+        fun clearRecordedCoords() { _recordedCoords.value = null }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -43,11 +53,17 @@ class OverlayService : Service() {
         showFab()
     }
 
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == ACTION_RECORD_POSITION) showPositionRecorder()
+        return START_NOT_STICKY
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
         fabView?.let { wm.removeView(it) }
         panelView?.let { wm.removeView(it) }
+        recorderView?.let { wm.removeView(it) }
     }
 
     // ── FAB ───────────────────────────────────────────────────────────────────
@@ -242,6 +258,72 @@ class OverlayService : Service() {
             .setSmallIcon(R.drawable.ic_play_circle)
             .setContentIntent(tap)
             .build()
+    }
+
+    // ── Position recorder overlay ─────────────────────────────────────────────
+
+    private fun showPositionRecorder() {
+        recorderView?.let { wm.removeView(it); recorderView = null }
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            PixelFormat.TRANSLUCENT
+        )
+
+        val root = FrameLayout(this)
+        root.setBackgroundColor(Color.argb(120, 0, 0, 0))
+
+        // Header bar with instructions + cancel
+        val header = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#CC6650A4"))
+            setPadding(dpToPx(14), dpToPx(12), dpToPx(10), dpToPx(12))
+        }
+        val label = TextView(this).apply {
+            text = "Tap anywhere to record click position"
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+        val cancelBtn = TextView(this).apply {
+            text = "Cancel"
+            setTextColor(Color.parseColor("#FFCDD2"))
+            textSize = 14f
+            setPadding(dpToPx(12), 0, dpToPx(4), 0)
+        }
+        cancelBtn.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_UP) dismissRecorder()
+            true
+        }
+        header.addView(label)
+        header.addView(cancelBtn)
+        root.addView(header, FrameLayout.LayoutParams(
+            FrameLayout.LayoutParams.MATCH_PARENT,
+            FrameLayout.LayoutParams.WRAP_CONTENT,
+            Gravity.TOP
+        ))
+
+        root.setOnTouchListener { _, ev ->
+            if (ev.action == MotionEvent.ACTION_DOWN) {
+                val x = ev.rawX
+                val y = ev.rawY
+                dismissRecorder()
+                _recordedCoords.value = x to y
+            }
+            true
+        }
+
+        wm.addView(root, params)
+        recorderView = root
+    }
+
+    private fun dismissRecorder() {
+        recorderView?.let { wm.removeView(it) }
+        recorderView = null
     }
 
     private fun dpToPx(dp: Int): Int =

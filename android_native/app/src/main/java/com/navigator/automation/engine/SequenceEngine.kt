@@ -93,6 +93,10 @@ class SequenceEngine(
                 }
             }
 
+            is Step.TapCoords -> withContext(Dispatchers.Default) { svc.tapCoords(step.x, step.y) }
+
+            is Step.LongPress -> withContext(Dispatchers.Default) { svc.longPress(step.x, step.y, step.durationMs) }
+
             is Step.WaitSeconds -> delay((step.seconds * 1000).toLong())
 
             is Step.TypeText -> withContext(Dispatchers.Default) { svc.typeText(step.text) }

@@ -91,6 +91,20 @@ class AutomationAccessibilityService : AccessibilityService() {
         return done
     }
 
+    fun longPress(x: Float, y: Float, durationMs: Long = 500L): Boolean {
+        val path = Path().apply { moveTo(x, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        var done = false
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription) { done = true }
+            override fun onCancelled(g: GestureDescription) { done = true }
+        }, null)
+        val deadline = System.currentTimeMillis() + durationMs + 1_000
+        while (!done && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        return done
+    }
+
     fun swipe(direction: String) {
         val display = resources.displayMetrics
         val w = display.widthPixels.toFloat()

@@ -1,5 +1,6 @@
 package com.navigator.automation.ui.screens
 
+import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.sp
 import com.navigator.automation.engine.Sequence
 import com.navigator.automation.engine.SequenceRepository
 import com.navigator.automation.engine.Step
+import com.navigator.automation.service.OverlayService
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -199,16 +201,36 @@ private fun AddStepDialog(
     onDismiss: () -> Unit,
     onAdd: (Step) -> Unit
 ) {
+    val context = LocalContext.current
     var selected by remember { mutableStateOf(0) }
-    val types = listOf("Tap text", "Wait", "Type text", "Swipe", "Press key",
-                       "Launch app", "Watch corners", "Check branch",
-                       "Press Back", "Press Home", "Dismiss Ad")
+    val types = listOf(
+        "Tap text", "Tap coords", "Long press",
+        "Wait", "Type text", "Swipe", "Press key",
+        "Launch app", "Watch corners", "Check branch",
+        "Press Back", "Press Home", "Dismiss Ad"
+    )
 
     var textArg      by remember { mutableStateOf("") }
     var floatArg     by remember { mutableStateOf("1.0") }
     var intArg       by remember { mutableStateOf("25") }
+    var durationArg  by remember { mutableStateOf("500") }
+    var xArg         by remember { mutableStateOf("") }
+    var yArg         by remember { mutableStateOf("") }
     var dirArg       by remember { mutableStateOf("up") }
     var branchSeqArg by remember { mutableStateOf(availableSequences.firstOrNull() ?: "") }
+    var isRecording  by remember { mutableStateOf(false) }
+
+    // Collect recorded coordinates from overlay service
+    val recordedCoords by OverlayService.recordedCoords.collectAsState()
+    LaunchedEffect(recordedCoords) {
+        val coords = recordedCoords ?: return@LaunchedEffect
+        if (isRecording) {
+            xArg = "%.1f".format(coords.first)
+            yArg = "%.1f".format(coords.second)
+            isRecording = false
+            OverlayService.clearRecordedCoords()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -235,13 +257,59 @@ private fun AddStepDialog(
 
                 // Dynamic fields
                 when (selected) {
-                    0, 2 -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
+                    0, 4 -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                                 label = { Text(if (selected == 0) "Text to tap" else "Text to type") },
                                 modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    1    -> OutlinedTextField(value = floatArg, onValueChange = { floatArg = it },
+
+                    1, 2 -> {
+                        // Tap coords / Long press — show X, Y fields + record button
+                        FilledTonalButton(
+                            onClick = {
+                                isRecording = true
+                                OverlayService.clearRecordedCoords()
+                                val intent = Intent(context, OverlayService::class.java).apply {
+                                    action = OverlayService.ACTION_RECORD_POSITION
+                                }
+                                context.startService(intent)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(if (isRecording) "Waiting — tap the screen…" else "Record tap position")
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            OutlinedTextField(
+                                value = xArg,
+                                onValueChange = { xArg = it },
+                                label = { Text("X") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                            )
+                            OutlinedTextField(
+                                value = yArg,
+                                onValueChange = { yArg = it },
+                                label = { Text("Y") },
+                                modifier = Modifier.weight(1f),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+                            )
+                        }
+                        if (selected == 2) {
+                            OutlinedTextField(
+                                value = durationArg,
+                                onValueChange = { durationArg = it },
+                                label = { Text("Hold duration (ms)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                            )
+                        }
+                    }
+
+                    3    -> OutlinedTextField(value = floatArg, onValueChange = { floatArg = it },
                                 label = { Text("Seconds") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                    3    -> {
+                    5    -> {
                         var dirExp by remember { mutableStateOf(false) }
                         val dirs = listOf("up", "down", "left", "right")
                         ExposedDropdownMenuBox(expanded = dirExp, onExpandedChange = { dirExp = it }) {
@@ -253,15 +321,15 @@ private fun AddStepDialog(
                             }
                         }
                     }
-                    4    -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
+                    6    -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                                 label = { Text("Key (back / home / recents)") },
                                 modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    5    -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
+                    7    -> OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                                 label = { Text("Package or app name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                    6    -> OutlinedTextField(value = intArg, onValueChange = { intArg = it },
+                    8    -> OutlinedTextField(value = intArg, onValueChange = { intArg = it },
                                 label = { Text("Timeout (seconds)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                    7    -> {
+                    9    -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("If screen shows text…") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                         Spacer(Modifier.height(4.dp))
@@ -282,25 +350,37 @@ private fun AddStepDialog(
                             }
                         }
                     }
-                    // 8,9,10 — no args needed
+                    // 10, 11, 12 — no args needed
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = {
                 val step: Step? = when (selected) {
-                    0  -> if (textArg.isNotBlank())  Step.TapText(textArg)   else null
-                    1  -> Step.WaitSeconds(floatArg.toFloatOrNull() ?: 1f)
-                    2  -> if (textArg.isNotBlank())  Step.TypeText(textArg)  else null
-                    3  -> Step.Swipe(dirArg)
-                    4  -> if (textArg.isNotBlank())  Step.PressKey(textArg)  else null
-                    5  -> if (textArg.isNotBlank())  Step.LaunchApp(textArg) else null
-                    6  -> Step.WatchCorners(intArg.toIntOrNull() ?: 25)
-                    7  -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank())
+                    0  -> if (textArg.isNotBlank()) Step.TapText(textArg) else null
+                    1  -> {
+                        val x = xArg.toFloatOrNull()
+                        val y = yArg.toFloatOrNull()
+                        if (x != null && y != null) Step.TapCoords(x, y) else null
+                    }
+                    2  -> {
+                        val x = xArg.toFloatOrNull()
+                        val y = yArg.toFloatOrNull()
+                        if (x != null && y != null)
+                            Step.LongPress(x, y, durationArg.toLongOrNull() ?: 500L)
+                        else null
+                    }
+                    3  -> Step.WaitSeconds(floatArg.toFloatOrNull() ?: 1f)
+                    4  -> if (textArg.isNotBlank()) Step.TypeText(textArg) else null
+                    5  -> Step.Swipe(dirArg)
+                    6  -> if (textArg.isNotBlank()) Step.PressKey(textArg) else null
+                    7  -> if (textArg.isNotBlank()) Step.LaunchApp(textArg) else null
+                    8  -> Step.WatchCorners(intArg.toIntOrNull() ?: 25)
+                    9  -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank())
                               Step.CheckBranch(textArg, branchSeqArg) else null
-                    8  -> Step.PressBack
-                    9  -> Step.PressHome
-                    10 -> Step.DismissAd
+                    10 -> Step.PressBack
+                    11 -> Step.PressHome
+                    12 -> Step.DismissAd
                     else -> null
                 }
                 step?.let { onAdd(it) }

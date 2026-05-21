@@ -93,15 +93,9 @@ class SequenceEngine(
                 }
             }
 
-            is Step.TapButton -> {
-                withContext(Dispatchers.Default) {
-                    val node = retryFind(svc, step.text)
-                    if (node != null) {
-                        // ACTION_CLICK works for standard views; gesture tap covers custom/non-standard buttons
-                        if (!svc.clickNode(node)) svc.tapNode(node)
-                    }
-                }
-            }
+            is Step.TapCoords -> withContext(Dispatchers.Default) { svc.tapCoords(step.x, step.y) }
+
+            is Step.LongPress -> withContext(Dispatchers.Default) { svc.longPress(step.x, step.y, step.durationMs) }
 
             is Step.WaitSeconds -> delay((step.seconds * 1000).toLong())
 
