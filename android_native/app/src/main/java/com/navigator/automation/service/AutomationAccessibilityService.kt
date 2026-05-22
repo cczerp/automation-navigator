@@ -57,9 +57,7 @@ class AutomationAccessibilityService : AccessibilityService() {
                 val seq  = runCatching {
                     Sequence.fromJson(org.json.JSONObject(json))
                 }.getOrNull() ?: return START_NOT_STICKY
-                engine?.stop()
-                engine = SequenceEngine(this, seq, serviceScope)
-                engine!!.start()
+                execute(seq)
             }
             ACTION_STOP   -> engine?.stop()
             ACTION_PAUSE  -> engine?.pause()
@@ -67,6 +65,17 @@ class AutomationAccessibilityService : AccessibilityService() {
         }
         return START_NOT_STICKY
     }
+
+    /** Called directly from OverlayService to avoid startService routing issues. */
+    fun execute(seq: Sequence) {
+        engine?.stop()
+        engine = SequenceEngine(this, seq, serviceScope)
+        engine!!.start()
+    }
+
+    fun stopCurrent() { engine?.stop() }
+    fun pauseCurrent() { engine?.pause() }
+    fun resumeCurrent() { engine?.resume() }
 
     // ── Gesture helpers (called by SequenceEngine) ────────────────────────
 

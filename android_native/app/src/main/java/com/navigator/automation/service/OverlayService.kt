@@ -18,9 +18,17 @@ import android.widget.*
 import androidx.core.app.NotificationCompat
 import com.navigator.automation.MainActivity
 import com.navigator.automation.R
+import com.navigator.automation.engine.EngineStatus
+import com.navigator.automation.engine.RunState
 import com.navigator.automation.engine.SequenceRepository
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 
 class OverlayService : Service() {
 
@@ -28,6 +36,11 @@ class OverlayService : Service() {
     private var fabView: View? = null
     private var panelView: View? = null
     private var recorderView: View? = null
+    private var statusBanner: View? = null
+    private var statusText: TextView? = null
+
+    private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
+    private var engineObserver: Job? = null
 
     companion object {
         private const val CHANNEL_ID = "overlay_service"
@@ -61,9 +74,11 @@ class OverlayService : Service() {
     override fun onDestroy() {
         super.onDestroy()
         isRunning = false
+        serviceScope.cancel()
         fabView?.let { wm.removeView(it) }
         panelView?.let { wm.removeView(it) }
         recorderView?.let { wm.removeView(it) }
+        statusBanner?.let { wm.removeView(it) }
     }
 
     // ── FAB ───────────────────────────────────────────────────────────────────
@@ -160,7 +175,10 @@ class OverlayService : Service() {
             setTextColor(Color.WHITE)
             textSize = 18f
             setPadding(dpToPx(8), 0, dpToPx(4), 0)
-            setOnClickListener { dismissPanel() }
+            setOnTouchListener { _, ev ->
+                if (ev.action == MotionEvent.ACTION_UP) dismissPanel()
+                ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
+            }
         }
         header.addView(title)
         header.addView(closeBtn)
@@ -175,26 +193,36 @@ class OverlayService : Service() {
             }
             panel.addView(empty)
         } else {
-            val scroll = ScrollView(this).apply {
-                layoutParams = LinearLayout.LayoutParams(
-                    LinearLayout.LayoutParams.MATCH_PARENT,
-                    minOf(sequences.size * dpToPx(48), dpToPx(280))
-                )
-            }
+            // No ScrollView — setOnClickListener doesn't fire reliably in overlay windows
+            // when wrapped in a ScrollView. Use setOnTouchListener directly instead.
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-            sequences.forEach { name ->
+            sequences.forEach { seqName ->
                 val row = TextView(this).apply {
-                    text = "▶  $name"
+                    text = "▶  $seqName"
                     setTextColor(Color.parseColor("#1D1B20"))
                     textSize = 14f
                     setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
-                    setOnClickListener {
-                        runSequence(name)
-                        dismissPanel()
+                    setOnTouchListener { v, ev ->
+                        when (ev.action) {
+                            MotionEvent.ACTION_DOWN -> {
+                                v.setBackgroundColor(Color.parseColor("#DDD6F3"))
+                                true
+                            }
+                            MotionEvent.ACTION_UP -> {
+                                v.setBackgroundColor(Color.TRANSPARENT)
+                                runSequence(seqName)
+                                dismissPanel()
+                                true
+                            }
+                            MotionEvent.ACTION_CANCEL -> {
+                                v.setBackgroundColor(Color.TRANSPARENT)
+                                true
+                            }
+                            else -> false
+                        }
                     }
                 }
-                // Divider
                 val divider = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, 1
@@ -205,8 +233,7 @@ class OverlayService : Service() {
                 list.addView(divider)
             }
 
-            scroll.addView(list)
-            panel.addView(scroll)
+            panel.addView(list)
         }
 
         // "Open app" footer
@@ -215,11 +242,14 @@ class OverlayService : Service() {
             setTextColor(Color.parseColor("#6650A4"))
             textSize = 12f
             setPadding(dpToPx(16), dpToPx(10), dpToPx(16), dpToPx(12))
-            setOnClickListener {
-                dismissPanel()
-                startActivity(Intent(this@OverlayService, MainActivity::class.java).apply {
-                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                })
+            setOnTouchListener { _, ev ->
+                if (ev.action == MotionEvent.ACTION_UP) {
+                    dismissPanel()
+                    startActivity(Intent(this@OverlayService, MainActivity::class.java).apply {
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    })
+                }
+                ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
             }
         }
         panel.addView(footer)
@@ -234,12 +264,109 @@ class OverlayService : Service() {
     }
 
     private fun runSequence(name: String) {
-        val seq = SequenceRepository.load(this, name) ?: return
-        val intent = Intent(this, AutomationAccessibilityService::class.java).apply {
-            action = AutomationAccessibilityService.ACTION_RUN
-            putExtra(AutomationAccessibilityService.EXTRA_SEQUENCE, seq.toJson().toString())
+        val seq = SequenceRepository.load(this, name) ?: run {
+            Toast.makeText(this, "Could not load sequence: $name", Toast.LENGTH_SHORT).show()
+            return
         }
-        startService(intent)
+        val svc = AutomationAccessibilityService.instance
+        if (svc == null) {
+            Toast.makeText(
+                this,
+                "Accessibility service not enabled.\nOpen Settings → Accessibility → Automation Navigator and turn it on.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        Toast.makeText(this, "▶ Starting: $name", Toast.LENGTH_SHORT).show()
+        svc.execute(seq)
+        observeEngine(name)
+    }
+
+    // ── Running-status banner ─────────────────────────────────────────────────
+
+    private fun observeEngine(name: String) {
+        engineObserver?.cancel()
+        val engine = AutomationAccessibilityService.currentEngine ?: return
+        engineObserver = serviceScope.launch {
+            engine.status.collect { status ->
+                when (status.state) {
+                    RunState.RUNNING, RunState.PAUSED -> showStatusBanner(name, status)
+                    RunState.DONE -> {
+                        dismissStatusBanner()
+                        Toast.makeText(this@OverlayService, "✓ Done: $name", Toast.LENGTH_SHORT).show()
+                        engineObserver?.cancel()
+                    }
+                    RunState.ERROR -> {
+                        dismissStatusBanner()
+                        Toast.makeText(this@OverlayService, "⚠ Error: ${status.message}", Toast.LENGTH_LONG).show()
+                        engineObserver?.cancel()
+                    }
+                    RunState.IDLE -> {
+                        dismissStatusBanner()
+                        engineObserver?.cancel()
+                    }
+                }
+            }
+        }
+    }
+
+    private fun showStatusBanner(name: String, status: EngineStatus) {
+        if (statusBanner == null) {
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.BOTTOM; y = dpToPx(60) }
+
+            val banner = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setBackgroundColor(Color.parseColor("#DD1D1B20"))
+                setPadding(dpToPx(14), dpToPx(10), dpToPx(10), dpToPx(10))
+            }
+
+            val tv = TextView(this).apply {
+                setTextColor(Color.WHITE)
+                textSize = 13f
+                layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            }
+            statusText = tv
+
+            val stopBtn = TextView(this).apply {
+                text = "■ Stop"
+                setTextColor(Color.parseColor("#FFCDD2"))
+                textSize = 13f
+                setTypeface(null, Typeface.BOLD)
+                setPadding(dpToPx(12), 0, dpToPx(4), 0)
+                setOnTouchListener { _, ev ->
+                    if (ev.action == MotionEvent.ACTION_UP) {
+                        AutomationAccessibilityService.instance?.stopCurrent()
+                        dismissStatusBanner()
+                    }
+                    ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
+                }
+            }
+
+            banner.addView(tv)
+            banner.addView(stopBtn)
+            wm.addView(banner, params)
+            statusBanner = banner
+        }
+
+        val stepInfo = if (status.totalSteps > 0)
+            "Step ${status.currentStep + 1}/${status.totalSteps}" else ""
+        val stateLabel = if (status.state == RunState.PAUSED) " ⏸ Paused" else ""
+        statusText?.text = "⚙ $name  $stepInfo  ${status.message}$stateLabel"
+    }
+
+    private fun dismissStatusBanner() {
+        statusBanner?.let {
+            try { wm.removeView(it) } catch (_: Exception) {}
+        }
+        statusBanner = null
+        statusText = null
     }
 
     // ── Notification ──────────────────────────────────────────────────────────
