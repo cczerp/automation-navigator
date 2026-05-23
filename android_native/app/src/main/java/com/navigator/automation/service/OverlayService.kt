@@ -216,11 +216,17 @@ class OverlayService : Service() {
         } else {
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
             sequences.forEach { seqName ->
-                val row = TextView(this).apply {
+                val row = LinearLayout(this).apply {
+                    orientation = LinearLayout.HORIZONTAL
+                    setPadding(dpToPx(16), dpToPx(4), dpToPx(8), dpToPx(4))
+                }
+
+                val nameBtn = TextView(this).apply {
                     text = "▶  $seqName"
                     setTextColor(Color.parseColor("#1D1B20"))
                     textSize = 14f
-                    setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
+                    setPadding(0, dpToPx(10), 0, dpToPx(10))
+                    layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
                     setOnTouchListener { v, ev ->
                         when (ev.action) {
                             MotionEvent.ACTION_DOWN -> { v.setBackgroundColor(Color.parseColor("#DDD6F3")); true }
@@ -230,6 +236,28 @@ class OverlayService : Service() {
                         }
                     }
                 }
+
+                val editBtn = TextView(this).apply {
+                    text = "✎"
+                    setTextColor(Color.parseColor("#6650A4"))
+                    textSize = 18f
+                    setPadding(dpToPx(8), dpToPx(8), dpToPx(8), dpToPx(8))
+                    setOnTouchListener { _, ev ->
+                        if (ev.action == MotionEvent.ACTION_UP) {
+                            dismissPanel()
+                            val encoded = java.net.URLEncoder.encode(seqName, "UTF-8")
+                            com.navigator.automation.MainActivity.navigateTo("editor/$encoded")
+                            startActivity(Intent(this@OverlayService, com.navigator.automation.MainActivity::class.java).apply {
+                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                            })
+                        }
+                        ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
+                    }
+                }
+
+                row.addView(nameBtn)
+                row.addView(editBtn)
+
                 val divider = View(this).apply {
                     layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
                     setBackgroundColor(Color.parseColor("#E6E1E5"))

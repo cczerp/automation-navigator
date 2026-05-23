@@ -72,7 +72,7 @@ class SequenceEngine(
 
                 emit(RunState.RUNNING, step = idx, message = step.label())
                 runStep(svc, step)
-                delay(300) // brief settle between steps
+                delay(sequence.stepDelayMs)
             }
 
             if (totalLoops > 0 && iteration >= totalLoops) break
@@ -137,7 +137,7 @@ class SequenceEngine(
 
             is Step.LaunchApp -> {
                 withContext(Dispatchers.Default) { svc.launchApp(step.target) }
-                delay(2500) // let the app finish loading before next step
+                delay(3500) // let the app finish loading before next step
             }
 
             is Step.WatchCorners -> {
@@ -193,16 +193,16 @@ class SequenceEngine(
         }
     }
 
-    /** Try to find a node by text up to 3 times with 400 ms between attempts. */
+    /** Try to find a node by text up to 5 times with 600 ms between attempts. */
     private suspend fun retryFind(
         svc: AutomationAccessibilityService,
         text: String,
-        attempts: Int = 3
+        attempts: Int = 5
     ): android.view.accessibility.AccessibilityNodeInfo? {
         repeat(attempts) {
             val node = svc.findNodeByText(text)
             if (node != null) return node
-            delay(400)
+            delay(600)
         }
         return null
     }

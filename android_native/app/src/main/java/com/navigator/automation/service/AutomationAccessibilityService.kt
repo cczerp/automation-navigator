@@ -80,6 +80,10 @@ class AutomationAccessibilityService : AccessibilityService() {
     // ── Gesture helpers (called by SequenceEngine) ────────────────────────
 
     fun tapNode(node: AccessibilityNodeInfo): Boolean {
+        // Prefer direct accessibility click — more reliable than gesture for standard UI
+        val clickable = if (node.isClickable) node else findClickableAncestor(node)
+        if (clickable != null && clickable.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return true
+        // Fall back to gesture at node centre
         val rect = Rect()
         node.getBoundsInScreen(rect)
         return tapCoords(rect.exactCenterX(), rect.exactCenterY())
@@ -149,10 +153,20 @@ class AutomationAccessibilityService : AccessibilityService() {
 
     // ── Node search (called by SequenceEngine) ────────────────────────────
 
-    /** Find first clickable node whose text/description/hint contains [text] (case-insensitive). */
+    /** Find first clickable node whose text/description/hint contains [text] (case-insensitive).
+     *  Searches all windows so it works even when the target isn't the focused window. */
     fun findNodeByText(text: String): AccessibilityNodeInfo? {
-        val root = rootInActiveWindow ?: return null
-        return searchNode(root, text)
+        val roots = buildList {
+            rootInActiveWindow?.let { add(it) }
+            try {
+                windows?.forEach { w -> w.root?.let { r -> if (none { it == r }) add(r) } }
+            } catch (_: Exception) {}
+        }
+        for (root in roots) {
+            val result = searchNode(root, text)
+            if (result != null) return result
+        }
+        return null
     }
 
     private fun searchNode(node: AccessibilityNodeInfo, text: String): AccessibilityNodeInfo? {
@@ -198,27 +212,48 @@ class AutomationAccessibilityService : AccessibilityService() {
         for (i in 0 until node.childCount) collectText(node.getChild(i) ?: continue, out)
     }
 
-    /** Look for dismiss text (X, ×, Close, Skip, Done …) in screen corners. */
+    /** Look for dismiss text (X, ×, Close, Skip, Done …) or a small clickable corner button. */
     fun findDismissNode(): AccessibilityNodeInfo? {
-        val dismissWords = setOf("x", "×", "close", "skip", "done", "dismiss", "✕", "✖", "got it", "no thanks")
+        val dismissWords = setOf(
+            "x", "×", "✕", "✖", "✗", "close", "skip", "done", "dismiss",
+            "got it", "no thanks", "not now", "later", "continue", "maybe later", "no, thanks"
+        )
         val root = rootInActiveWindow ?: return null
-        return findDismissInTree(root, dismissWords)
+        val textResult = findDismissInTree(root, dismissWords)
+        if (textResult != null) return textResult
+        // Corner heuristic: small clickable button in top-right or top-left of screen
+        val dm = resources.displayMetrics
+        val cornerW = (dm.widthPixels * 0.18f).toInt()
+        val cornerH = (dm.heightPixels * 0.18f).toInt()
+        return findCornerButton(root, dm.widthPixels, cornerW, cornerH)
     }
 
-    private fun findDismissInTree(
-        node: AccessibilityNodeInfo,
-        words: Set<String>
-    ): AccessibilityNodeInfo? {
+    private fun findDismissInTree(node: AccessibilityNodeInfo, words: Set<String>): AccessibilityNodeInfo? {
         val txt = listOf(node.text?.toString(), node.contentDescription?.toString())
-            .filterNotNull()
-            .joinToString(" ")
-            .lowercase()
-            .trim()
-        if (words.any { txt == it || txt.contains(it) }) {
+            .filterNotNull().joinToString(" ").lowercase().trim()
+        if (txt.isNotEmpty() && words.any { txt == it || txt.contains(it) }) {
             return findClickableAncestor(node) ?: node
         }
         for (i in 0 until node.childCount) {
             val r = findDismissInTree(node.getChild(i) ?: continue, words)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findCornerButton(
+        node: AccessibilityNodeInfo,
+        screenW: Int, cornerW: Int, cornerH: Int
+    ): AccessibilityNodeInfo? {
+        val rect = Rect()
+        node.getBoundsInScreen(rect)
+        val inTopCorner = rect.top in 0..cornerH &&
+            (rect.right <= cornerW || rect.left >= screenW - cornerW)
+        if (inTopCorner && node.isClickable && rect.width() in 10..220 && rect.height() in 10..220) {
+            return node
+        }
+        for (i in 0 until node.childCount) {
+            val r = findCornerButton(node.getChild(i) ?: continue, screenW, cornerW, cornerH)
             if (r != null) return r
         }
         return null

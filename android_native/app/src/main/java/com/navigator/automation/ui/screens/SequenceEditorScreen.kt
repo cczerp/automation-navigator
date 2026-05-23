@@ -36,12 +36,14 @@ fun SequenceEditorScreen(
         sequenceName?.let { SequenceRepository.load(context, it) }
     }
 
-    var name      by remember { mutableStateOf(existing?.name ?: "") }
-    var steps     by remember { mutableStateOf(existing?.steps?.toMutableList() ?: mutableListOf()) }
-    var loopCount by remember { mutableStateOf(existing?.loopCount?.toString() ?: "1") }
-    var loopDelay by remember { mutableStateOf(existing?.loopDelaySeconds?.toString() ?: "1.0") }
-    var showAdd   by remember { mutableStateOf(false) }
-    var nameError by remember { mutableStateOf(false) }
+    var name         by remember { mutableStateOf(existing?.name ?: "") }
+    var steps        by remember { mutableStateOf(existing?.steps?.toMutableList() ?: mutableListOf()) }
+    var loopCount    by remember { mutableStateOf(existing?.loopCount?.toString() ?: "1") }
+    var loopDelay    by remember { mutableStateOf(existing?.loopDelaySeconds?.toString() ?: "1.0") }
+    var stepInterval by remember { mutableStateOf(existing?.stepDelayMs?.toString() ?: "500") }
+    var showAdd      by remember { mutableStateOf(false) }
+    var nameError    by remember { mutableStateOf(false) }
+    var editingStepIndex by remember { mutableStateOf<Int?>(null) }
 
     // When the overlay point editor saves positions, update our steps
     val editedPoints by OverlayService.editedPoints.collectAsState()
@@ -65,7 +67,8 @@ fun SequenceEditorScreen(
         name = name.trim(),
         steps = steps.toList(),
         loopCount = loopCount.toIntOrNull() ?: 1,
-        loopDelaySeconds = loopDelay.toFloatOrNull() ?: 1f
+        loopDelaySeconds = loopDelay.toFloatOrNull() ?: 1f,
+        stepDelayMs = stepInterval.toLongOrNull() ?: 500L
     )
 
     val hasTapPoints = steps.any { it is Step.TapCoords || it is Step.LongPress }
@@ -121,7 +124,15 @@ fun SequenceEditorScreen(
             }
 
             item {
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = stepInterval,
+                        onValueChange = { stepInterval = it },
+                        label = { Text("Step delay (ms)") },
+                        modifier = Modifier.weight(1f),
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                    )
                     OutlinedTextField(
                         value = loopCount,
                         onValueChange = { loopCount = it },
@@ -204,8 +215,9 @@ fun SequenceEditorScreen(
                     StepRow(
                         step = step,
                         index = idx,
-                        onDelete  = { steps = steps.toMutableList().also { it.removeAt(idx) } },
-                        onMoveUp  = {
+                        onEdit     = { editingStepIndex = idx },
+                        onDelete   = { steps = steps.toMutableList().also { it.removeAt(idx) } },
+                        onMoveUp   = {
                             if (idx > 0) steps = steps.toMutableList().also {
                                 val tmp = it[idx]; it[idx] = it[idx-1]; it[idx-1] = tmp
                             }
@@ -222,19 +234,35 @@ fun SequenceEditorScreen(
     }
 
     if (showAdd) {
-        AddStepDialog(
+        StepDialog(
+            initialStep = null,
             availableSequences = SequenceRepository.list(context).filter { it != name },
             onDismiss = { showAdd = false },
-            onAdd = { step ->
+            onConfirm = { step ->
                 steps = steps.toMutableList().also { it.add(step) }
                 showAdd = false
+            }
+        )
+    }
+
+    editingStepIndex?.let { idx ->
+        StepDialog(
+            initialStep = steps[idx],
+            availableSequences = SequenceRepository.list(context).filter { it != name },
+            onDismiss = { editingStepIndex = null },
+            onConfirm = { updated ->
+                steps = steps.toMutableList().also { it[idx] = updated }
+                editingStepIndex = null
             }
         )
     }
 }
 
 @Composable
-private fun StepRow(step: Step, index: Int, onDelete: () -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit) {
+private fun StepRow(
+    step: Step, index: Int,
+    onEdit: () -> Unit, onDelete: () -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
@@ -253,22 +281,23 @@ private fun StepRow(step: Step, index: Int, onDelete: () -> Unit, onMoveUp: () -
             Text(step.label(), modifier = Modifier.weight(1f), fontSize = 14.sp)
             IconButton(onClick = onMoveUp,   modifier = Modifier.size(32.dp)) { Icon(Icons.Default.KeyboardArrowUp,   null, modifier = Modifier.size(18.dp)) }
             IconButton(onClick = onMoveDown, modifier = Modifier.size(32.dp)) { Icon(Icons.Default.KeyboardArrowDown, null, modifier = Modifier.size(18.dp)) }
+            IconButton(onClick = onEdit,     modifier = Modifier.size(32.dp)) { Icon(Icons.Default.Edit, null,        modifier = Modifier.size(18.dp)) }
             IconButton(onClick = onDelete,   modifier = Modifier.size(32.dp)) { Icon(Icons.Default.Close, null,       modifier = Modifier.size(18.dp), tint = MaterialTheme.colorScheme.error) }
         }
     }
 }
 
-// ── Add Step Dialog ───────────────────────────────────────────────────────────
+// ── Step Dialog (add or edit) ─────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AddStepDialog(
+private fun StepDialog(
+    initialStep: Step?,           // null = add mode; non-null = edit mode
     availableSequences: List<String>,
     onDismiss: () -> Unit,
-    onAdd: (Step) -> Unit
+    onConfirm: (Step) -> Unit
 ) {
     val context = LocalContext.current
-    var selected by remember { mutableStateOf(0) }
     val types = listOf(
         "Tap text", "Tap coords", "Long press",
         "Wait", "Type text",
@@ -277,24 +306,45 @@ private fun AddStepDialog(
         "Press Back", "Press Home", "Dismiss Ad"
     )
 
-    // Shared fields
-    var textArg      by remember { mutableStateOf("") }
-    var floatArg     by remember { mutableStateOf("1.0") }
-    var intArg       by remember { mutableStateOf("25") }
-    var durationArg  by remember { mutableStateOf("500") }
-    var xArg         by remember { mutableStateOf("") }
-    var yArg         by remember { mutableStateOf("") }
-    var dirArg       by remember { mutableStateOf("up") }
-    var branchSeqArg by remember { mutableStateOf(availableSequences.firstOrNull() ?: "") }
-    var delayArg     by remember { mutableStateOf("0") }
-    var repeatArg    by remember { mutableStateOf("1") }
-    var swipeDurArg  by remember { mutableStateOf("300") }
+    // Derive initial type index and field values from the existing step (edit mode)
+    val initIdx = when (initialStep) {
+        is Step.TapText    -> 0;  is Step.TapCoords  -> 1;  is Step.LongPress  -> 2
+        is Step.WaitSeconds-> 3;  is Step.TypeText   -> 4;  is Step.Swipe      -> 5
+        is Step.SwipeCoords-> 6;  is Step.PressKey   -> 7;  is Step.LaunchApp  -> 8
+        is Step.WatchCorners->9;  is Step.CheckBranch->10;  Step.PressBack     -> 11
+        Step.PressHome     ->12;  Step.DismissAd     ->13;  null               -> 0
+        else -> 0
+    }
+
+    var selected by remember { mutableStateOf(initIdx) }
+    var textArg      by remember { mutableStateOf(when (initialStep) {
+        is Step.TapText -> initialStep.text; is Step.TypeText -> initialStep.text
+        is Step.PressKey -> initialStep.key; is Step.LaunchApp -> initialStep.target
+        is Step.CheckBranch -> initialStep.triggerText; else -> ""
+    }) }
+    var floatArg     by remember { mutableStateOf(if (initialStep is Step.WaitSeconds) initialStep.seconds.toString() else "1.0") }
+    var intArg       by remember { mutableStateOf(if (initialStep is Step.WatchCorners) initialStep.timeoutSeconds.toString() else "25") }
+    var durationArg  by remember { mutableStateOf(if (initialStep is Step.LongPress) initialStep.durationMs.toString() else "500") }
+    var xArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.x); is Step.LongPress -> "%.1f".format(initialStep.x); else -> "" }) }
+    var yArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.y); is Step.LongPress -> "%.1f".format(initialStep.y); else -> "" }) }
+    var dirArg       by remember { mutableStateOf(if (initialStep is Step.Swipe) initialStep.direction else "up") }
+    var branchSeqArg by remember { mutableStateOf(if (initialStep is Step.CheckBranch) initialStep.thenSequence else availableSequences.firstOrNull() ?: "") }
+    var delayArg     by remember { mutableStateOf(when (initialStep) {
+        is Step.TapCoords -> initialStep.delayMs.toString(); is Step.LongPress -> initialStep.delayMs.toString()
+        is Step.Swipe -> initialStep.delayMs.toString(); is Step.SwipeCoords -> initialStep.delayMs.toString()
+        else -> "0"
+    }) }
+    var repeatArg    by remember { mutableStateOf(when (initialStep) {
+        is Step.TapCoords -> initialStep.repeatCount.toString(); is Step.LongPress -> initialStep.repeatCount.toString()
+        else -> "1"
+    }) }
+    var swipeDurArg  by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) initialStep.durationMs.toString() else "300") }
 
     // SwipeCoords fields
-    var x1Arg by remember { mutableStateOf("") }
-    var y1Arg by remember { mutableStateOf("") }
-    var x2Arg by remember { mutableStateOf("") }
-    var y2Arg by remember { mutableStateOf("") }
+    var x1Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.x1) else "") }
+    var y1Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.y1) else "") }
+    var x2Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.x2) else "") }
+    var y2Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.y2) else "") }
 
     // Position recorder state
     var isRecording      by remember { mutableStateOf(false) }
@@ -321,7 +371,7 @@ private fun AddStepDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Add Step") },
+        title = { Text(if (initialStep == null) "Add Step" else "Edit Step") },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                 // Type picker
@@ -548,8 +598,8 @@ private fun AddStepDialog(
                     13 -> Step.DismissAd
                     else -> null
                 }
-                step?.let { onAdd(it) }
-            }) { Text("Add") }
+                step?.let { onConfirm(it) }
+            }) { Text(if (initialStep == null) "Add" else "Update") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
     )

@@ -9,21 +9,35 @@ import androidx.navigation.compose.*
 import androidx.navigation.navArgument
 import com.navigator.automation.ui.screens.*
 import com.navigator.automation.ui.theme.AppTheme
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private val _pendingNav = MutableStateFlow<String?>(null)
+        val pendingNav: StateFlow<String?> = _pendingNav
+        fun navigateTo(route: String) { _pendingNav.value = route }
+        fun clearPendingNav() { _pendingNav.value = null }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent {
-            AppTheme {
-                AppNav()
-            }
-        }
+        setContent { AppTheme { AppNav() } }
     }
 }
 
 @Composable
 private fun AppNav() {
     val navController = rememberNavController()
+
+    // Allows OverlayService to drive navigation (e.g. "Edit" button opens the editor)
+    val pendingNav by MainActivity.pendingNav.collectAsState()
+    LaunchedEffect(pendingNav) {
+        val route = pendingNav ?: return@LaunchedEffect
+        MainActivity.clearPendingNav()
+        navController.navigate(route)
+    }
 
     NavHost(navController, startDestination = "home") {
 
