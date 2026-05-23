@@ -302,28 +302,34 @@ private fun StepDialog(
         "Tap text", "Tap coords", "Long press",
         "Wait", "Type text",
         "Swipe (direction)", "Swipe (coords)",
-        "Press key", "Launch app", "Watch corners", "Check branch",
+        "Press key", "Launch app",
+        "Watch corners", "Wait & tap (TapWhen)", "Check branch",
         "Press Back", "Press Home", "Dismiss Ad"
     )
 
     // Derive initial type index and field values from the existing step (edit mode)
     val initIdx = when (initialStep) {
-        is Step.TapText    -> 0;  is Step.TapCoords  -> 1;  is Step.LongPress  -> 2
-        is Step.WaitSeconds-> 3;  is Step.TypeText   -> 4;  is Step.Swipe      -> 5
-        is Step.SwipeCoords-> 6;  is Step.PressKey   -> 7;  is Step.LaunchApp  -> 8
-        is Step.WatchCorners->9;  is Step.CheckBranch->10;  Step.PressBack     -> 11
-        Step.PressHome     ->12;  Step.DismissAd     ->13;  null               -> 0
-        else -> 0
+        is Step.TapText    -> 0;  is Step.TapCoords   -> 1;  is Step.LongPress  -> 2
+        is Step.WaitSeconds-> 3;  is Step.TypeText    -> 4;  is Step.Swipe      -> 5
+        is Step.SwipeCoords-> 6;  is Step.PressKey    -> 7;  is Step.LaunchApp  -> 8
+        is Step.WatchCorners->9;  is Step.TapWhen    ->10;  is Step.CheckBranch->11
+        Step.PressBack     ->12;  Step.PressHome      ->13;  Step.DismissAd     ->14
+        null -> 0; else -> 0
     }
 
     var selected by remember { mutableStateOf(initIdx) }
     var textArg      by remember { mutableStateOf(when (initialStep) {
         is Step.TapText -> initialStep.text; is Step.TypeText -> initialStep.text
         is Step.PressKey -> initialStep.key; is Step.LaunchApp -> initialStep.target
+        is Step.TapWhen -> initialStep.text
         is Step.CheckBranch -> initialStep.triggerText; else -> ""
     }) }
     var floatArg     by remember { mutableStateOf(if (initialStep is Step.WaitSeconds) initialStep.seconds.toString() else "1.0") }
-    var intArg       by remember { mutableStateOf(if (initialStep is Step.WatchCorners) initialStep.timeoutSeconds.toString() else "25") }
+    var intArg       by remember { mutableStateOf(when (initialStep) {
+        is Step.WatchCorners -> initialStep.timeoutSeconds.toString()
+        is Step.TapWhen -> initialStep.timeoutSeconds.toString()
+        else -> "30"
+    }) }
     var durationArg  by remember { mutableStateOf(if (initialStep is Step.LongPress) initialStep.durationMs.toString() else "500") }
     var xArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.x); is Step.LongPress -> "%.1f".format(initialStep.x); else -> "" }) }
     var yArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.y); is Step.LongPress -> "%.1f".format(initialStep.y); else -> "" }) }
@@ -526,8 +532,22 @@ private fun StepDialog(
                             label = { Text("Timeout (seconds)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
 
-                    // 10: Check branch
+                    // 10: TapWhen — wait for text, then tap it
                     10 -> {
+                        OutlinedTextField(value = textArg, onValueChange = { textArg = it },
+                            label = { Text("Text to wait for and tap") },
+                            modifier = Modifier.fillMaxWidth(), singleLine = true)
+                        OutlinedTextField(value = intArg, onValueChange = { intArg = it },
+                            label = { Text("Max wait (seconds)") },
+                            modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        Text("Polls until the text appears on screen, then taps it. Good for ad buttons that appear after a timer.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    }
+
+                    // 11: Check branch
+                    11 -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("If screen shows text…") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                         if (availableSequences.isEmpty()) {
@@ -549,7 +569,7 @@ private fun StepDialog(
                         }
                     }
 
-                    // 11, 12, 13 — no args
+                    // 12, 13, 14 — no args
                     else -> Text("No configuration needed for this step type.",
                         color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f), fontSize = 13.sp)
                 }
@@ -591,11 +611,12 @@ private fun StepDialog(
                     7  -> if (textArg.isNotBlank()) Step.PressKey(textArg) else null
                     8  -> if (textArg.isNotBlank()) Step.LaunchApp(textArg) else null
                     9  -> Step.WatchCorners(intArg.toIntOrNull() ?: 25)
-                    10 -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank())
+                    10 -> if (textArg.isNotBlank()) Step.TapWhen(textArg, intArg.toIntOrNull() ?: 30) else null
+                    11 -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank())
                               Step.CheckBranch(textArg, branchSeqArg) else null
-                    11 -> Step.PressBack
-                    12 -> Step.PressHome
-                    13 -> Step.DismissAd
+                    12 -> Step.PressBack
+                    13 -> Step.PressHome
+                    14 -> Step.DismissAd
                     else -> null
                 }
                 step?.let { onConfirm(it) }

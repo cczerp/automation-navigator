@@ -140,6 +140,19 @@ class SequenceEngine(
                 delay(3500) // let the app finish loading before next step
             }
 
+            is Step.TapWhen -> {
+                // Poll for the specified text until it appears or timeout
+                val deadline = System.currentTimeMillis() + step.timeoutSeconds * 1_000L
+                while (System.currentTimeMillis() < deadline && !stopped) {
+                    val node = withContext(Dispatchers.Default) { svc.findNodeByText(step.text) }
+                    if (node != null) {
+                        withContext(Dispatchers.Default) { svc.tapNode(node) }
+                        break
+                    }
+                    delay(500)
+                }
+            }
+
             is Step.WatchCorners -> {
                 // Scan for dismiss UI for up to timeoutSeconds
                 val deadline = System.currentTimeMillis() + step.timeoutSeconds * 1_000L

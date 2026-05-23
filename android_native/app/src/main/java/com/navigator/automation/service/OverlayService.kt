@@ -38,6 +38,7 @@ class OverlayService : Service() {
 
     private lateinit var wm: WindowManager
     private var fabView: View? = null
+    private var closeZoneView: View? = null
     private var panelView: View? = null
     private var recorderView: View? = null
     private var statusBanner: View? = null
@@ -101,6 +102,7 @@ class OverlayService : Service() {
         isRunning = false
         serviceScope.cancel()
         fabView?.let  { wm.removeView(it) }
+        closeZoneView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         panelView?.let { wm.removeView(it) }
         recorderView?.let { wm.removeView(it) }
         statusBanner?.let { wm.removeView(it) }
@@ -129,6 +131,44 @@ class OverlayService : Service() {
         var startRawX = 0f; var startRawY = 0f
         var moved = false
 
+        val dm = resources.displayMetrics
+        val closeZoneRadius = dpToPx(44)
+
+        fun isOverCloseZone(rawX: Float, rawY: Float): Boolean {
+            val cx = dm.widthPixels / 2f
+            val cy = dm.heightPixels - dpToPx(72).toFloat()
+            val dx = rawX - cx; val dy = rawY - cy
+            return dx * dx + dy * dy <= closeZoneRadius * closeZoneRadius * 4
+        }
+
+        fun showCloseZone() {
+            if (closeZoneView != null) return
+            val zParams = WindowManager.LayoutParams(
+                dpToPx(80), dpToPx(80),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply { gravity = Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL; y = dpToPx(32) }
+            val zone = TextView(this@OverlayService).apply {
+                text = "✕"
+                textSize = 22f
+                setTypeface(null, Typeface.BOLD)
+                setTextColor(Color.WHITE)
+                gravity = Gravity.CENTER
+                background = GradientDrawable().apply {
+                    shape = GradientDrawable.OVAL
+                    setColor(Color.parseColor("#CC333333"))
+                }
+            }
+            wm.addView(zone, zParams)
+            closeZoneView = zone
+        }
+
+        fun hideCloseZone() {
+            closeZoneView?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+            closeZoneView = null
+        }
+
         btn.setOnTouchListener { _, ev ->
             when (ev.action) {
                 MotionEvent.ACTION_DOWN -> {
@@ -144,10 +184,24 @@ class OverlayService : Service() {
                         params.x = (dragX - dx).toInt()
                         params.y = (dragY + dy).toInt()
                         wm.updateViewLayout(btn.parent as View, params)
+                        showCloseZone()
+                        // Highlight close zone when hovering over it
+                        val hovering = isOverCloseZone(ev.rawX, ev.rawY)
+                        (closeZoneView as? TextView)?.apply {
+                            background = GradientDrawable().apply {
+                                shape = GradientDrawable.OVAL
+                                setColor(if (hovering) Color.parseColor("#CCE53935") else Color.parseColor("#CC333333"))
+                            }
+                        }
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> { if (!moved) togglePanel(); false }
+                MotionEvent.ACTION_UP -> {
+                    hideCloseZone()
+                    if (!moved) togglePanel()
+                    else if (isOverCloseZone(ev.rawX, ev.rawY)) stopSelf()
+                    false
+                }
                 else -> false
             }
         }
