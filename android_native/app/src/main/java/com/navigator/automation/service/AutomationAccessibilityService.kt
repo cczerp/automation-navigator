@@ -114,6 +114,20 @@ class AutomationAccessibilityService : AccessibilityService() {
         return done
     }
 
+    fun swipeCoords(x1: Float, y1: Float, x2: Float, y2: Float, durationMs: Long = 300L): Boolean {
+        val path = Path().apply { moveTo(x1, y1); lineTo(x2, y2) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, durationMs.coerceAtLeast(1L))
+        val gesture = GestureDescription.Builder().addStroke(stroke).build()
+        var done = false
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription) { done = true }
+            override fun onCancelled(g: GestureDescription) { done = true }
+        }, null)
+        val deadline = System.currentTimeMillis() + durationMs + 1_000
+        while (!done && System.currentTimeMillis() < deadline) Thread.sleep(10)
+        return done
+    }
+
     fun swipe(direction: String) {
         val display = resources.displayMetrics
         val w = display.widthPixels.toFloat()

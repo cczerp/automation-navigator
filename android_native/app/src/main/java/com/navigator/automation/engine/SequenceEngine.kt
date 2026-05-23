@@ -93,15 +93,35 @@ class SequenceEngine(
                 }
             }
 
-            is Step.TapCoords -> withContext(Dispatchers.Default) { svc.tapCoords(step.x, step.y) }
+            is Step.TapCoords -> withContext(Dispatchers.Default) {
+                if (step.delayMs > 0) delay(step.delayMs)
+                repeat(step.repeatCount) { i ->
+                    svc.tapCoords(step.x, step.y)
+                    if (i < step.repeatCount - 1) delay(100)
+                }
+            }
 
-            is Step.LongPress -> withContext(Dispatchers.Default) { svc.longPress(step.x, step.y, step.durationMs) }
+            is Step.LongPress -> withContext(Dispatchers.Default) {
+                if (step.delayMs > 0) delay(step.delayMs)
+                repeat(step.repeatCount) { i ->
+                    svc.longPress(step.x, step.y, step.durationMs)
+                    if (i < step.repeatCount - 1) delay(200)
+                }
+            }
 
             is Step.WaitSeconds -> delay((step.seconds * 1000).toLong())
 
             is Step.TypeText -> withContext(Dispatchers.Default) { svc.typeText(step.text) }
 
-            is Step.Swipe -> withContext(Dispatchers.Default) { svc.swipe(step.direction) }
+            is Step.Swipe -> withContext(Dispatchers.Default) {
+                if (step.delayMs > 0) delay(step.delayMs)
+                svc.swipe(step.direction)
+            }
+
+            is Step.SwipeCoords -> withContext(Dispatchers.Default) {
+                if (step.delayMs > 0) delay(step.delayMs)
+                svc.swipeCoords(step.x1, step.y1, step.x2, step.y2, step.durationMs)
+            }
 
             is Step.PressKey -> withContext(Dispatchers.Default) {
                 when (step.key.lowercase()) {

@@ -9,10 +9,12 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.*
 import androidx.core.app.NotificationCompat
@@ -21,6 +23,7 @@ import com.navigator.automation.R
 import com.navigator.automation.engine.EngineStatus
 import com.navigator.automation.engine.RunState
 import com.navigator.automation.engine.SequenceRepository
+import com.navigator.automation.engine.Step
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -29,6 +32,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import org.json.JSONArray
 
 class OverlayService : Service() {
 
@@ -42,18 +46,32 @@ class OverlayService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private var engineObserver: Job? = null
 
+    // Point editor state
+    private val pointEditorViews = mutableListOf<PointEditorEntry>()
+    private var pointEditorBanner: View? = null
+    private var editingSequenceName: String? = null
+
+    private data class PointEditorEntry(val stepIndex: Int, val params: WindowManager.LayoutParams, val view: View)
+
     companion object {
         private const val CHANNEL_ID = "overlay_service"
         private const val NOTIF_ID   = 1
+
         const val ACTION_RECORD_POSITION = "com.navigator.automation.RECORD_POSITION"
+        const val ACTION_EDIT_POINTS     = "com.navigator.automation.EDIT_POINTS"
+        const val EXTRA_SEQUENCE_NAME    = "seq_name"
+        const val EXTRA_POINTS_JSON      = "points_json"
 
         var isRunning = false
             private set
 
         private val _recordedCoords = MutableStateFlow<Pair<Float, Float>?>(null)
         val recordedCoords: StateFlow<Pair<Float, Float>?> = _recordedCoords
-
         fun clearRecordedCoords() { _recordedCoords.value = null }
+
+        private val _editedPoints = MutableStateFlow<Map<Int, Pair<Float, Float>>?>(null)
+        val editedPoints: StateFlow<Map<Int, Pair<Float, Float>>?> = _editedPoints
+        fun clearEditedPoints() { _editedPoints.value = null }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -67,7 +85,14 @@ class OverlayService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_RECORD_POSITION) showPositionRecorder()
+        when (intent?.action) {
+            ACTION_RECORD_POSITION -> showPositionRecorder()
+            ACTION_EDIT_POINTS -> {
+                val name   = intent.getStringExtra(EXTRA_SEQUENCE_NAME) ?: return START_NOT_STICKY
+                val points = intent.getStringExtra(EXTRA_POINTS_JSON) ?: return START_NOT_STICKY
+                showPointEditor(name, points)
+            }
+        }
         return START_NOT_STICKY
     }
 
@@ -75,10 +100,11 @@ class OverlayService : Service() {
         super.onDestroy()
         isRunning = false
         serviceScope.cancel()
-        fabView?.let { wm.removeView(it) }
+        fabView?.let  { wm.removeView(it) }
         panelView?.let { wm.removeView(it) }
         recorderView?.let { wm.removeView(it) }
         statusBanner?.let { wm.removeView(it) }
+        dismissPointEditor()
     }
 
     // ── FAB ───────────────────────────────────────────────────────────────────
@@ -99,7 +125,6 @@ class OverlayService : Service() {
             setPadding(14, 14, 14, 14)
         }
 
-        // Drag vs tap detection
         var dragX = 0; var dragY = 0
         var startRawX = 0f; var startRawY = 0f
         var moved = false
@@ -122,10 +147,7 @@ class OverlayService : Service() {
                     }
                     true
                 }
-                MotionEvent.ACTION_UP -> {
-                    if (!moved) togglePanel()
-                    false
-                }
+                MotionEvent.ACTION_UP -> { if (!moved) togglePanel(); false }
                 else -> false
             }
         }
@@ -157,7 +179,6 @@ class OverlayService : Service() {
             elevation = 12f
         }
 
-        // Header
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#6650A4"))
@@ -193,10 +214,7 @@ class OverlayService : Service() {
             }
             panel.addView(empty)
         } else {
-            // No ScrollView — setOnClickListener doesn't fire reliably in overlay windows
-            // when wrapped in a ScrollView. Use setOnTouchListener directly instead.
             val list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
-
             sequences.forEach { seqName ->
                 val row = TextView(this).apply {
                     text = "▶  $seqName"
@@ -205,38 +223,23 @@ class OverlayService : Service() {
                     setPadding(dpToPx(16), dpToPx(14), dpToPx(16), dpToPx(14))
                     setOnTouchListener { v, ev ->
                         when (ev.action) {
-                            MotionEvent.ACTION_DOWN -> {
-                                v.setBackgroundColor(Color.parseColor("#DDD6F3"))
-                                true
-                            }
-                            MotionEvent.ACTION_UP -> {
-                                v.setBackgroundColor(Color.TRANSPARENT)
-                                runSequence(seqName)
-                                dismissPanel()
-                                true
-                            }
-                            MotionEvent.ACTION_CANCEL -> {
-                                v.setBackgroundColor(Color.TRANSPARENT)
-                                true
-                            }
+                            MotionEvent.ACTION_DOWN -> { v.setBackgroundColor(Color.parseColor("#DDD6F3")); true }
+                            MotionEvent.ACTION_UP   -> { v.setBackgroundColor(Color.TRANSPARENT); runSequence(seqName); dismissPanel(); true }
+                            MotionEvent.ACTION_CANCEL -> { v.setBackgroundColor(Color.TRANSPARENT); true }
                             else -> false
                         }
                     }
                 }
                 val divider = View(this).apply {
-                    layoutParams = LinearLayout.LayoutParams(
-                        LinearLayout.LayoutParams.MATCH_PARENT, 1
-                    )
+                    layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 1)
                     setBackgroundColor(Color.parseColor("#E6E1E5"))
                 }
                 list.addView(row)
                 list.addView(divider)
             }
-
             panel.addView(list)
         }
 
-        // "Open app" footer
         val footer = TextView(this).apply {
             text = "Open Automation Navigator →"
             setTextColor(Color.parseColor("#6650A4"))
@@ -270,11 +273,9 @@ class OverlayService : Service() {
         }
         val svc = AutomationAccessibilityService.instance
         if (svc == null) {
-            Toast.makeText(
-                this,
+            Toast.makeText(this,
                 "Accessibility service not enabled.\nOpen Settings → Accessibility → Automation Navigator and turn it on.",
-                Toast.LENGTH_LONG
-            ).show()
+                Toast.LENGTH_LONG).show()
             return
         }
         Toast.makeText(this, "▶ Starting: $name", Toast.LENGTH_SHORT).show()
@@ -301,10 +302,7 @@ class OverlayService : Service() {
                         Toast.makeText(this@OverlayService, "⚠ Error: ${status.message}", Toast.LENGTH_LONG).show()
                         engineObserver?.cancel()
                     }
-                    RunState.IDLE -> {
-                        dismissStatusBanner()
-                        engineObserver?.cancel()
-                    }
+                    RunState.IDLE -> { dismissStatusBanner(); engineObserver?.cancel() }
                 }
             }
         }
@@ -316,8 +314,7 @@ class OverlayService : Service() {
                 WindowManager.LayoutParams.MATCH_PARENT,
                 WindowManager.LayoutParams.WRAP_CONTENT,
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
                 PixelFormat.TRANSLUCENT
             ).apply { gravity = Gravity.BOTTOM; y = dpToPx(60) }
 
@@ -355,16 +352,13 @@ class OverlayService : Service() {
             statusBanner = banner
         }
 
-        val stepInfo = if (status.totalSteps > 0)
-            "Step ${status.currentStep + 1}/${status.totalSteps}" else ""
+        val stepInfo = if (status.totalSteps > 0) "Step ${status.currentStep + 1}/${status.totalSteps}" else ""
         val stateLabel = if (status.state == RunState.PAUSED) " ⏸ Paused" else ""
         statusText?.text = "⚙ $name  $stepInfo  ${status.message}$stateLabel"
     }
 
     private fun dismissStatusBanner() {
-        statusBanner?.let {
-            try { wm.removeView(it) } catch (_: Exception) {}
-        }
+        statusBanner?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         statusBanner = null
         statusText = null
     }
@@ -376,9 +370,7 @@ class OverlayService : Service() {
         nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "Overlay", NotificationManager.IMPORTANCE_LOW)
         )
-        val tap = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE
-        )
+        val tap = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Automation Navigator")
             .setContentText("Tap the floating button to run sequences")
@@ -396,15 +388,13 @@ class OverlayService : Service() {
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
 
         val root = FrameLayout(this)
         root.setBackgroundColor(Color.argb(120, 0, 0, 0))
 
-        // Header bar with instructions + cancel
         val header = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             setBackgroundColor(Color.parseColor("#CC6650A4"))
@@ -429,17 +419,13 @@ class OverlayService : Service() {
         header.addView(label)
         header.addView(cancelBtn)
         root.addView(header, FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.MATCH_PARENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP
+            FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.WRAP_CONTENT, Gravity.TOP
         ))
 
         root.setOnTouchListener { _, ev ->
             if (ev.action == MotionEvent.ACTION_DOWN) {
-                val x = ev.rawX
-                val y = ev.rawY
                 dismissRecorder()
-                _recordedCoords.value = x to y
+                _recordedCoords.value = ev.rawX to ev.rawY
             }
             true
         }
@@ -453,6 +439,170 @@ class OverlayService : Service() {
         recorderView = null
     }
 
-    private fun dpToPx(dp: Int): Int =
-        (dp * resources.displayMetrics.density).toInt()
+    // ── Draggable point editor ────────────────────────────────────────────────
+
+    private fun showPointEditor(sequenceName: String, pointsJson: String) {
+        dismissPointEditor()
+        editingSequenceName = sequenceName
+
+        val points = try {
+            val arr = JSONArray(pointsJson)
+            (0 until arr.length()).map { i ->
+                val obj = arr.getJSONObject(i)
+                Triple(obj.getInt("stepIndex"), obj.getDouble("x").toFloat(), obj.getDouble("y").toFloat())
+            }
+        } catch (e: Exception) { return }
+
+        if (points.isEmpty()) {
+            Toast.makeText(this, "No tap points in this sequence", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        points.forEach { (stepIndex, x, y) ->
+            val circleView = buildPointCircle(stepIndex + 1)
+            val halfSize = dpToPx(26)
+            val circleParams = WindowManager.LayoutParams(
+                dpToPx(52), dpToPx(52),
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                this.x = (x - halfSize).toInt().coerceAtLeast(0)
+                this.y = (y - halfSize).toInt().coerceAtLeast(0)
+            }
+
+            var startX = 0; var startY = 0
+            var startRawX = 0f; var startRawY = 0f
+
+            circleView.setOnTouchListener { _, ev ->
+                when (ev.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        startX = circleParams.x; startY = circleParams.y
+                        startRawX = ev.rawX; startRawY = ev.rawY
+                        true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        circleParams.x = (startX + ev.rawX - startRawX).toInt()
+                        circleParams.y = (startY + ev.rawY - startRawY).toInt()
+                        try { wm.updateViewLayout(circleView, circleParams) } catch (_: Exception) {}
+                        true
+                    }
+                    else -> false
+                }
+            }
+
+            wm.addView(circleView, circleParams)
+            pointEditorViews.add(PointEditorEntry(stepIndex, circleParams, circleView))
+        }
+
+        showPointEditorBanner()
+    }
+
+    private fun buildPointCircle(number: Int): TextView {
+        val size = dpToPx(52)
+        return TextView(this).apply {
+            text = number.toString()
+            setTextColor(Color.WHITE)
+            textSize = 15f
+            setTypeface(null, Typeface.BOLD)
+            gravity = Gravity.CENTER
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor("#DD6650A4"))
+                setStroke(dpToPx(2), Color.WHITE)
+            }
+            layoutParams = ViewGroup.LayoutParams(size, size)
+        }
+    }
+
+    private fun showPointEditorBanner() {
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        ).apply { gravity = Gravity.BOTTOM; y = dpToPx(60) }
+
+        val banner = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            setBackgroundColor(Color.parseColor("#DD1D1B20"))
+            setPadding(dpToPx(14), dpToPx(10), dpToPx(10), dpToPx(10))
+        }
+
+        val label = TextView(this).apply {
+            text = "Drag circles to reposition taps"
+            setTextColor(Color.WHITE)
+            textSize = 12f
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        }
+
+        val saveBtn = TextView(this).apply {
+            text = "Save"
+            setTextColor(Color.parseColor("#90EE90"))
+            textSize = 14f
+            setTypeface(null, Typeface.BOLD)
+            setPadding(dpToPx(12), 0, dpToPx(4), 0)
+            setOnTouchListener { _, ev ->
+                if (ev.action == MotionEvent.ACTION_UP) saveEditedPoints()
+                ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
+            }
+        }
+
+        val cancelBtn = TextView(this).apply {
+            text = "Cancel"
+            setTextColor(Color.parseColor("#FFCDD2"))
+            textSize = 14f
+            setPadding(dpToPx(12), 0, dpToPx(4), 0)
+            setOnTouchListener { _, ev ->
+                if (ev.action == MotionEvent.ACTION_UP) dismissPointEditor()
+                ev.action == MotionEvent.ACTION_DOWN || ev.action == MotionEvent.ACTION_UP
+            }
+        }
+
+        banner.addView(label)
+        banner.addView(saveBtn)
+        banner.addView(cancelBtn)
+        wm.addView(banner, params)
+        pointEditorBanner = banner
+    }
+
+    private fun saveEditedPoints() {
+        val seqName = editingSequenceName ?: return
+        val half = dpToPx(26).toFloat()
+
+        val updatesMap = pointEditorViews.associate { entry ->
+            entry.stepIndex to (entry.params.x + half to entry.params.y + half)
+        }
+
+        val seq = SequenceRepository.load(this, seqName)
+        if (seq != null) {
+            val newSteps = seq.steps.mapIndexed { idx, step ->
+                val upd = updatesMap[idx] ?: return@mapIndexed step
+                when (step) {
+                    is Step.TapCoords -> step.copy(x = upd.first, y = upd.second)
+                    is Step.LongPress -> step.copy(x = upd.first, y = upd.second)
+                    else -> step
+                }
+            }
+            SequenceRepository.save(this, seq.copy(steps = newSteps))
+        }
+
+        _editedPoints.value = updatesMap
+        dismissPointEditor()
+        Toast.makeText(this, "Tap positions saved", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun dismissPointEditor() {
+        pointEditorViews.forEach { entry -> try { wm.removeView(entry.view) } catch (_: Exception) {} }
+        pointEditorViews.clear()
+        pointEditorBanner?.let { try { wm.removeView(it) } catch (_: Exception) {} }
+        pointEditorBanner = null
+        editingSequenceName = null
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private fun dpToPx(dp: Int): Int = (dp * resources.displayMetrics.density).toInt()
 }
