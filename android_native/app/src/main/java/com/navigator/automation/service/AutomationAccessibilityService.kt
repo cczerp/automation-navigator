@@ -86,8 +86,8 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     fun tapCoords(x: Float, y: Float): Boolean {
-        val path = Path().apply { moveTo(x, y) }
-        val stroke = GestureDescription.StrokeDescription(path, 0, 50)
+        val path = Path().apply { moveTo(x, y); lineTo(x + 1f, y) }
+        val stroke = GestureDescription.StrokeDescription(path, 0, 100)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         var done = false
         dispatchGesture(gesture, object : GestureResultCallback() {
@@ -101,7 +101,7 @@ class AutomationAccessibilityService : AccessibilityService() {
     }
 
     fun longPress(x: Float, y: Float, durationMs: Long = 500L): Boolean {
-        val path = Path().apply { moveTo(x, y) }
+        val path = Path().apply { moveTo(x, y); lineTo(x + 1f, y) }
         val stroke = GestureDescription.StrokeDescription(path, 0, durationMs)
         val gesture = GestureDescription.Builder().addStroke(stroke).build()
         var done = false
