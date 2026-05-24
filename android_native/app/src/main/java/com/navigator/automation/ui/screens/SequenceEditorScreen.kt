@@ -24,6 +24,32 @@ import com.navigator.automation.service.OverlayService
 import org.json.JSONArray
 import org.json.JSONObject
 
+// ── Time unit helpers ─────────────────────────────────────────────────────────
+
+private fun msToDisplay(ms: Long): Pair<String, String> = when {
+    ms == 0L -> "0" to "ms"
+    ms % 60_000L == 0L -> (ms / 60_000L).toString() to "min"
+    ms % 1_000L == 0L  -> (ms / 1_000L).toString()  to "s"
+    else -> ms.toString() to "ms"
+}
+
+private fun displayToMs(value: String, unit: String): Long {
+    val v = value.toLongOrNull() ?: 0L
+    return when (unit) { "s" -> v * 1_000L; "min" -> v * 60_000L; else -> v }
+}
+
+private fun secsToDisplay(s: Float): Pair<String, String> = when {
+    s >= 60f && s % 60f == 0f -> (s / 60f).toInt().toString() to "min"
+    else -> s.toString() to "s"
+}
+
+private fun displayToSecs(value: String, unit: String): Float {
+    val v = value.toFloatOrNull() ?: 1f
+    return if (unit == "min") v * 60f else v
+}
+
+// ── Editor screen ──────────────────────────────────────────────────────────────
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SequenceEditorScreen(
@@ -36,15 +62,14 @@ fun SequenceEditorScreen(
         sequenceName?.let { SequenceRepository.load(context, it) }
     }
 
-    var name         by remember { mutableStateOf(existing?.name ?: "") }
-    var steps        by remember { mutableStateOf(existing?.steps?.toMutableList() ?: mutableListOf()) }
-    var loopCount    by remember { mutableStateOf(existing?.loopCount?.toString() ?: "1") }
-    var loopDelay    by remember { mutableStateOf(existing?.loopDelaySeconds?.toString() ?: "1.0") }
-    var showAdd      by remember { mutableStateOf(false) }
-    var nameError    by remember { mutableStateOf(false) }
+    var name      by remember { mutableStateOf(existing?.name ?: "") }
+    var steps     by remember { mutableStateOf(existing?.steps?.toMutableList() ?: mutableListOf()) }
+    var loopCount by remember { mutableStateOf(existing?.loopCount?.toString() ?: "1") }
+    var loopDelay by remember { mutableStateOf(existing?.loopDelaySeconds?.toString() ?: "1.0") }
+    var showAdd   by remember { mutableStateOf(false) }
+    var nameError by remember { mutableStateOf(false) }
     var editingStepIndex by remember { mutableStateOf<Int?>(null) }
 
-    // When the overlay point editor saves positions, update our steps
     val editedPoints by OverlayService.editedPoints.collectAsState()
     LaunchedEffect(editedPoints) {
         val updates = editedPoints ?: return@LaunchedEffect
@@ -79,7 +104,6 @@ fun SequenceEditorScreen(
                     IconButton(onClick = onBack) { Icon(Icons.Default.ArrowBack, "Back") }
                 },
                 actions = {
-                    // Export via share sheet
                     IconButton(onClick = {
                         val json = currentSequence().toJson().toString(2)
                         val shareIntent = Intent(Intent.ACTION_SEND).apply {
@@ -91,7 +115,6 @@ fun SequenceEditorScreen(
                         context.startActivity(Intent.createChooser(shareIntent, "Export sequence"))
                     }) { Icon(Icons.Default.Share, "Export") }
 
-                    // Save
                     IconButton(onClick = {
                         if (name.isBlank()) { nameError = true; return@IconButton }
                         SequenceRepository.save(context, currentSequence())
@@ -149,7 +172,6 @@ fun SequenceEditorScreen(
                 ) {
                     Text("Steps", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
 
-                    // Edit tap positions on-screen (draggable overlay circles)
                     if (hasTapPoints) {
                         FilledTonalButton(
                             onClick = {
@@ -203,8 +225,7 @@ fun SequenceEditorScreen(
             } else {
                 itemsIndexed(steps) { idx, step ->
                     StepRow(
-                        step = step,
-                        index = idx,
+                        step = step, index = idx,
                         onEdit     = { editingStepIndex = idx },
                         onDelete   = { steps = steps.toMutableList().also { it.removeAt(idx) } },
                         onMoveUp   = {
@@ -228,10 +249,7 @@ fun SequenceEditorScreen(
             initialStep = null,
             availableSequences = SequenceRepository.list(context).filter { it != name },
             onDismiss = { showAdd = false },
-            onConfirm = { step ->
-                steps = steps.toMutableList().also { it.add(step) }
-                showAdd = false
-            }
+            onConfirm = { step -> steps = steps.toMutableList().also { it.add(step) }; showAdd = false }
         )
     }
 
@@ -240,13 +258,12 @@ fun SequenceEditorScreen(
             initialStep = steps[idx],
             availableSequences = SequenceRepository.list(context).filter { it != name },
             onDismiss = { editingStepIndex = null },
-            onConfirm = { updated ->
-                steps = steps.toMutableList().also { it[idx] = updated }
-                editingStepIndex = null
-            }
+            onConfirm = { updated -> steps = steps.toMutableList().also { it[idx] = updated }; editingStepIndex = null }
         )
     }
 }
+
+// ── Step row ──────────────────────────────────────────────────────────────────
 
 @Composable
 private fun StepRow(
@@ -277,12 +294,42 @@ private fun StepRow(
     }
 }
 
-// ── Step Dialog (add or edit) ─────────────────────────────────────────────────
+// ── Time unit picker ──────────────────────────────────────────────────────────
+
+@Composable
+private fun TimeField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    unit: String,
+    onUnitChange: (String) -> Unit,
+    label: String,
+    units: List<String> = listOf("ms", "s", "min"),
+    modifier: Modifier = Modifier
+) {
+    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        OutlinedTextField(
+            value = value, onValueChange = onValueChange,
+            label = { Text(label) },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+        )
+        units.forEach { u ->
+            FilterChip(
+                selected = unit == u,
+                onClick = { onUnitChange(u) },
+                label = { Text(u, fontSize = 11.sp) }
+            )
+        }
+    }
+}
+
+// ── Step dialog ───────────────────────────────────────────────────────────────
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StepDialog(
-    initialStep: Step?,           // null = add mode; non-null = edit mode
+    initialStep: Step?,
     availableSequences: List<String>,
     onDismiss: () -> Unit,
     onConfirm: (Step) -> Unit
@@ -293,73 +340,98 @@ private fun StepDialog(
         "Wait", "Type text",
         "Swipe (direction)", "Swipe (coords)",
         "Press key", "Launch app",
-        "Watch corners", "Wait & tap (TapWhen)", "Check branch",
+        "Watch corners", "Wait & tap", "Check branch",
         "Press Back", "Press Home", "Dismiss Ad"
     )
 
-    // Derive initial type index and field values from the existing step (edit mode)
     val initIdx = when (initialStep) {
-        is Step.TapText    -> 0;  is Step.TapCoords   -> 1;  is Step.LongPress  -> 2
-        is Step.WaitSeconds-> 3;  is Step.TypeText    -> 4;  is Step.Swipe      -> 5
-        is Step.SwipeCoords-> 6;  is Step.PressKey    -> 7;  is Step.LaunchApp  -> 8
-        is Step.WatchCorners->9;  is Step.TapWhen    ->10;  is Step.CheckBranch->11
-        is Step.PressBack  ->12;  is Step.PressHome   ->13;  is Step.DismissAd  ->14
+        is Step.TapText     -> 0;  is Step.TapCoords   -> 1;  is Step.LongPress   -> 2
+        is Step.WaitSeconds -> 3;  is Step.TypeText    -> 4;  is Step.Swipe       -> 5
+        is Step.SwipeCoords -> 6;  is Step.PressKey    -> 7;  is Step.LaunchApp   -> 8
+        is Step.WatchCorners-> 9;  is Step.TapWhen    -> 10;  is Step.CheckBranch -> 11
+        is Step.PressBack   ->12;  is Step.PressHome  -> 13;  is Step.DismissAd   -> 14
         null -> 0; else -> 0
     }
 
     var selected by remember { mutableStateOf(initIdx) }
-    var textArg      by remember { mutableStateOf(when (initialStep) {
+
+    // Text / key / target field
+    var textArg by remember { mutableStateOf(when (initialStep) {
         is Step.TapText -> initialStep.text; is Step.TypeText -> initialStep.text
         is Step.PressKey -> initialStep.key; is Step.LaunchApp -> initialStep.target
-        is Step.TapWhen -> initialStep.text
-        is Step.CheckBranch -> initialStep.triggerText; else -> ""
+        is Step.TapWhen -> initialStep.text; is Step.CheckBranch -> initialStep.triggerText
+        else -> ""
     }) }
-    var floatArg     by remember { mutableStateOf(if (initialStep is Step.WaitSeconds) initialStep.seconds.toString() else "1.0") }
-    var intArg       by remember { mutableStateOf(when (initialStep) {
-        is Step.WatchCorners -> initialStep.timeoutSeconds.toString()
-        is Step.TapWhen -> initialStep.timeoutSeconds.toString()
-        else -> "30"
-    }) }
-    var durationArg  by remember { mutableStateOf(if (initialStep is Step.LongPress) initialStep.durationMs.toString() else "500") }
-    var xArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.x); is Step.LongPress -> "%.1f".format(initialStep.x); else -> "" }) }
-    var yArg         by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.y); is Step.LongPress -> "%.1f".format(initialStep.y); else -> "" }) }
-    var dirArg       by remember { mutableStateOf(if (initialStep is Step.Swipe) initialStep.direction else "up") }
-    var branchSeqArg by remember { mutableStateOf(if (initialStep is Step.CheckBranch) initialStep.thenSequence else availableSequences.firstOrNull() ?: "") }
-    var delayArg     by remember { mutableStateOf(when (initialStep) {
-        is Step.TapText     -> initialStep.delayMs.toString()
-        is Step.TapCoords   -> initialStep.delayMs.toString()
-        is Step.LongPress   -> initialStep.delayMs.toString()
-        is Step.WaitSeconds -> initialStep.delayMs.toString()
-        is Step.TypeText    -> initialStep.delayMs.toString()
-        is Step.Swipe       -> initialStep.delayMs.toString()
-        is Step.SwipeCoords -> initialStep.delayMs.toString()
-        is Step.PressKey    -> initialStep.delayMs.toString()
-        is Step.LaunchApp   -> initialStep.delayMs.toString()
-        is Step.WatchCorners-> initialStep.delayMs.toString()
-        is Step.TapWhen     -> initialStep.delayMs.toString()
-        is Step.CheckBranch -> initialStep.delayMs.toString()
-        is Step.PressBack   -> initialStep.delayMs.toString()
-        is Step.PressHome   -> initialStep.delayMs.toString()
-        is Step.DismissAd   -> initialStep.delayMs.toString()
-        else -> "0"
-    }) }
-    var repeatArg    by remember { mutableStateOf(when (initialStep) {
-        is Step.TapCoords -> initialStep.repeatCount.toString(); is Step.LongPress -> initialStep.repeatCount.toString()
-        else -> "1"
-    }) }
-    var swipeDurArg  by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) initialStep.durationMs.toString() else "300") }
 
-    // SwipeCoords fields
+    // Wait duration (seconds)
+    val (initWaitVal, initWaitUnit) = remember { secsToDisplay(if (initialStep is Step.WaitSeconds) initialStep.seconds else 1f) }
+    var waitVal  by remember { mutableStateOf(initWaitVal) }
+    var waitUnit by remember { mutableStateOf(initWaitUnit) }
+
+    // Timeout (seconds) for WatchCorners / TapWhen
+    val initTimeout = remember {
+        when (initialStep) {
+            is Step.WatchCorners -> initialStep.timeoutSeconds.toFloat()
+            is Step.TapWhen      -> initialStep.timeoutSeconds.toFloat()
+            else -> 30f
+        }
+    }
+    val (initToutVal, initToutUnit) = remember { secsToDisplay(initTimeout) }
+    var toutVal  by remember { mutableStateOf(initToutVal) }
+    var toutUnit by remember { mutableStateOf(initToutUnit) }
+
+    // Hold duration for LongPress
+    val (initDurVal, initDurUnit) = remember { msToDisplay(if (initialStep is Step.LongPress) initialStep.durationMs else 500L) }
+    var durVal  by remember { mutableStateOf(initDurVal) }
+    var durUnit by remember { mutableStateOf(initDurUnit) }
+
+    // Swipe duration
+    val (initSwDurVal, initSwDurUnit) = remember { msToDisplay(if (initialStep is Step.SwipeCoords) initialStep.durationMs else 300L) }
+    var swDurVal  by remember { mutableStateOf(initSwDurVal) }
+    var swDurUnit by remember { mutableStateOf(initSwDurUnit) }
+
+    // Coords
+    var xArg  by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.x); is Step.LongPress -> "%.1f".format(initialStep.x); else -> "" }) }
+    var yArg  by remember { mutableStateOf(when (initialStep) { is Step.TapCoords -> "%.1f".format(initialStep.y); is Step.LongPress -> "%.1f".format(initialStep.y); else -> "" }) }
     var x1Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.x1) else "") }
     var y1Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.y1) else "") }
     var x2Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.x2) else "") }
     var y2Arg by remember { mutableStateOf(if (initialStep is Step.SwipeCoords) "%.1f".format(initialStep.y2) else "") }
 
-    // Position recorder state
+    // Direction / key
+    var dirArg by remember { mutableStateOf(if (initialStep is Step.Swipe) initialStep.direction else "up") }
+
+    // Branch sequence
+    var branchSeqArg by remember { mutableStateOf(if (initialStep is Step.CheckBranch) initialStep.thenSequence else availableSequences.firstOrNull() ?: "") }
+
+    // Repeat
+    var repeatArg by remember { mutableStateOf(when (initialStep) {
+        is Step.TapCoords -> initialStep.repeatCount.toString()
+        is Step.LongPress -> initialStep.repeatCount.toString()
+        else -> "1"
+    }) }
+
+    // Delay AFTER (all types)
+    val initDelayMs = remember {
+        when (initialStep) {
+            is Step.TapText -> initialStep.delayMs; is Step.TapCoords -> initialStep.delayMs
+            is Step.LongPress -> initialStep.delayMs; is Step.WaitSeconds -> initialStep.delayMs
+            is Step.TypeText -> initialStep.delayMs; is Step.Swipe -> initialStep.delayMs
+            is Step.SwipeCoords -> initialStep.delayMs; is Step.PressKey -> initialStep.delayMs
+            is Step.LaunchApp -> initialStep.delayMs; is Step.WatchCorners -> initialStep.delayMs
+            is Step.TapWhen -> initialStep.delayMs; is Step.CheckBranch -> initialStep.delayMs
+            is Step.PressBack -> initialStep.delayMs; is Step.PressHome -> initialStep.delayMs
+            is Step.DismissAd -> initialStep.delayMs; else -> 0L
+        }
+    }
+    val (initDelayVal, initDelayUnit) = remember { msToDisplay(initDelayMs) }
+    var delayVal  by remember { mutableStateOf(initDelayVal) }
+    var delayUnit by remember { mutableStateOf(initDelayUnit) }
+
+    // Position recorder
     var isRecording      by remember { mutableStateOf(false) }
     var isRecordingStart by remember { mutableStateOf(false) }
     var isRecordingEnd   by remember { mutableStateOf(false) }
-
     val recordedCoords by OverlayService.recordedCoords.collectAsState()
     LaunchedEffect(recordedCoords) {
         val coords = recordedCoords ?: return@LaunchedEffect
@@ -370,7 +442,6 @@ private fun StepDialog(
         }
         OverlayService.clearRecordedCoords()
     }
-
     fun startRecorder() {
         OverlayService.clearRecordedCoords()
         context.startService(Intent(context, OverlayService::class.java).apply {
@@ -387,9 +458,7 @@ private fun StepDialog(
                 var expanded by remember { mutableStateOf(false) }
                 ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { expanded = it }) {
                     OutlinedTextField(
-                        value = types[selected],
-                        onValueChange = {},
-                        readOnly = true,
+                        value = types[selected], onValueChange = {}, readOnly = true,
                         label = { Text("Step type") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded) },
                         modifier = Modifier.menuAnchor().fillMaxWidth()
@@ -406,17 +475,14 @@ private fun StepDialog(
                     0 -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("Text to tap") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 1: Tap coords
                     1 -> {
-                        FilledTonalButton(
-                            onClick = { isRecording = true; startRecorder() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (isRecording) "Tap anywhere on screen…" else "Record tap position") }
+                        FilledTonalButton(onClick = { isRecording = true; startRecorder() }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (isRecording) "Tap anywhere on screen…" else "Record tap position")
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(value = xArg, onValueChange = { xArg = it }, label = { Text("X") },
                                 modifier = Modifier.weight(1f), singleLine = true,
@@ -425,22 +491,17 @@ private fun StepDialog(
                                 modifier = Modifier.weight(1f), singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                                label = { Text("Delay before (ms)") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(value = repeatArg, onValueChange = { repeatArg = it },
-                                label = { Text("Repeat") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        }
+                        OutlinedTextField(value = repeatArg, onValueChange = { repeatArg = it },
+                            label = { Text("Repeat") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 2: Long press
                     2 -> {
-                        FilledTonalButton(
-                            onClick = { isRecording = true; startRecorder() },
-                            modifier = Modifier.fillMaxWidth()
-                        ) { Text(if (isRecording) "Tap anywhere on screen…" else "Record press position") }
+                        FilledTonalButton(onClick = { isRecording = true; startRecorder() }, modifier = Modifier.fillMaxWidth()) {
+                            Text(if (isRecording) "Tap anywhere on screen…" else "Record press position")
+                        }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(value = xArg, onValueChange = { xArg = it }, label = { Text("X") },
                                 modifier = Modifier.weight(1f), singleLine = true,
@@ -449,39 +510,27 @@ private fun StepDialog(
                                 modifier = Modifier.weight(1f), singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         }
-                        OutlinedTextField(value = durationArg, onValueChange = { durationArg = it },
-                            label = { Text("Hold duration (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                        TimeField(durVal, { durVal = it }, durUnit, { durUnit = it }, "Hold duration", units = listOf("ms", "s"), modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(value = repeatArg, onValueChange = { repeatArg = it },
+                            label = { Text("Repeat") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                                label = { Text("Delay before (ms)") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(value = repeatArg, onValueChange = { repeatArg = it },
-                                label = { Text("Repeat") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        }
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 3: Wait
                     3 -> {
-                        OutlinedTextField(value = floatArg, onValueChange = { floatArg = it },
-                            label = { Text("Seconds") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Additional delay after (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(waitVal, { waitVal = it }, waitUnit, { waitUnit = it }, "Duration", units = listOf("s", "min"), modifier = Modifier.fillMaxWidth())
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Extra delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 4: Type text
                     4 -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("Text to type") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
-                    // 5: Swipe (direction)
+                    // 5: Swipe direction
                     5 -> {
                         var dirExp by remember { mutableStateOf(false) }
                         val dirs = listOf("up", "down", "left", "right")
@@ -493,22 +542,18 @@ private fun StepDialog(
                                 dirs.forEach { d -> DropdownMenuItem(text = { Text(d) }, onClick = { dirArg = d; dirExp = false }) }
                             }
                         }
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 6: Swipe coords
                     6 -> {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            FilledTonalButton(
-                                onClick = { isRecordingStart = true; startRecorder() },
-                                modifier = Modifier.weight(1f)
-                            ) { Text(if (isRecordingStart) "Tap start…" else "Record start") }
-                            FilledTonalButton(
-                                onClick = { isRecordingEnd = true; startRecorder() },
-                                modifier = Modifier.weight(1f)
-                            ) { Text(if (isRecordingEnd) "Tap end…" else "Record end") }
+                            FilledTonalButton(onClick = { isRecordingStart = true; startRecorder() }, modifier = Modifier.weight(1f)) {
+                                Text(if (isRecordingStart) "Tap start…" else "Record start")
+                            }
+                            FilledTonalButton(onClick = { isRecordingEnd = true; startRecorder() }, modifier = Modifier.weight(1f)) {
+                                Text(if (isRecordingEnd) "Tap end…" else "Record end")
+                            }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             OutlinedTextField(value = x1Arg, onValueChange = { x1Arg = it }, label = { Text("Start X") },
@@ -526,14 +571,8 @@ private fun StepDialog(
                                 modifier = Modifier.weight(1f), singleLine = true,
                                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal))
                         }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            OutlinedTextField(value = swipeDurArg, onValueChange = { swipeDurArg = it },
-                                label = { Text("Duration (ms)") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                            OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                                label = { Text("Delay before (ms)") }, modifier = Modifier.weight(1f), singleLine = true,
-                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        }
+                        TimeField(swDurVal, { swDurVal = it }, swDurUnit, { swDurUnit = it }, "Swipe duration", units = listOf("ms", "s"), modifier = Modifier.fillMaxWidth())
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 7: Press key
@@ -541,43 +580,30 @@ private fun StepDialog(
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("Key (back / home / recents)") },
                             modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 8: Launch app
                     8 -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("Package or app name") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Extra delay after launch", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 9: Watch corners
                     9 -> {
-                        OutlinedTextField(value = intArg, onValueChange = { intArg = it },
-                            label = { Text("Timeout (seconds)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(toutVal, { toutVal = it }, toutUnit, { toutUnit = it }, "Timeout", units = listOf("s", "min"), modifier = Modifier.fillMaxWidth())
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
-                    // 10: TapWhen — wait for text, then tap it
+                    // 10: Wait & tap
                     10 -> {
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("Text to wait for and tap") },
                             modifier = Modifier.fillMaxWidth(), singleLine = true)
-                        OutlinedTextField(value = intArg, onValueChange = { intArg = it },
-                            label = { Text("Max wait (seconds)") },
-                            modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-                        Text("Polls until the text appears on screen, then taps it. Good for ad buttons that appear after a timer.",
+                        TimeField(toutVal, { toutVal = it }, toutUnit, { toutUnit = it }, "Max wait", units = listOf("s", "min"), modifier = Modifier.fillMaxWidth())
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
+                        Text("Polls until text appears, then taps it — good for timed ad buttons.",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
                     }
@@ -587,14 +613,13 @@ private fun StepDialog(
                         OutlinedTextField(value = textArg, onValueChange = { textArg = it },
                             label = { Text("If screen shows text…") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                         if (availableSequences.isEmpty()) {
-                            Text("No other sequences — save this one first.",
-                                color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                            Text("No other sequences — save this one first.", color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                         } else {
-                            Spacer(Modifier.height(4.dp))
                             var branchExp by remember { mutableStateOf(false) }
                             ExposedDropdownMenuBox(expanded = branchExp, onExpandedChange = { branchExp = it }) {
                                 OutlinedTextField(value = branchSeqArg, onValueChange = {}, readOnly = true,
-                                    label = { Text("Run sequence") }, trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(branchExp) },
+                                    label = { Text("Run sequence") },
+                                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(branchExp) },
                                     modifier = Modifier.menuAnchor().fillMaxWidth())
                                 ExposedDropdownMenu(expanded = branchExp, onDismissRequest = { branchExp = false }) {
                                     availableSequences.forEach { s ->
@@ -603,57 +628,35 @@ private fun StepDialog(
                                 }
                             }
                         }
-                        OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                            label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                        TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                     }
 
                     // 12, 13, 14 — delay only
-                    else -> OutlinedTextField(value = delayArg, onValueChange = { delayArg = it },
-                        label = { Text("Delay before (ms)") }, modifier = Modifier.fillMaxWidth(), singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+                    else -> TimeField(delayVal, { delayVal = it }, delayUnit, { delayUnit = it }, "Delay after", modifier = Modifier.fillMaxWidth())
                 }
             }
         },
         confirmButton = {
             TextButton(onClick = {
-                val delay = delayArg.toLongOrNull() ?: 0L
+                val delay = displayToMs(delayVal, delayUnit)
                 val step: Step? = when (selected) {
                     0  -> if (textArg.isNotBlank()) Step.TapText(textArg, delay) else null
-                    1  -> {
-                        val x = xArg.toFloatOrNull(); val y = yArg.toFloatOrNull()
-                        if (x != null && y != null) Step.TapCoords(
-                            x, y, delay,
-                            repeatArg.toIntOrNull()?.coerceAtLeast(1) ?: 1
-                        ) else null
-                    }
-                    2  -> {
-                        val x = xArg.toFloatOrNull(); val y = yArg.toFloatOrNull()
-                        if (x != null && y != null) Step.LongPress(
-                            x, y,
-                            durationArg.toLongOrNull() ?: 500L,
-                            delay,
-                            repeatArg.toIntOrNull()?.coerceAtLeast(1) ?: 1
-                        ) else null
-                    }
-                    3  -> Step.WaitSeconds(floatArg.toFloatOrNull() ?: 1f, delay)
+                    1  -> { val x = xArg.toFloatOrNull(); val y = yArg.toFloatOrNull()
+                            if (x != null && y != null) Step.TapCoords(x, y, delay, repeatArg.toIntOrNull()?.coerceAtLeast(1) ?: 1) else null }
+                    2  -> { val x = xArg.toFloatOrNull(); val y = yArg.toFloatOrNull()
+                            if (x != null && y != null) Step.LongPress(x, y, displayToMs(durVal, durUnit), delay, repeatArg.toIntOrNull()?.coerceAtLeast(1) ?: 1) else null }
+                    3  -> Step.WaitSeconds(displayToSecs(waitVal, waitUnit), delay)
                     4  -> if (textArg.isNotBlank()) Step.TypeText(textArg, delay) else null
                     5  -> Step.Swipe(dirArg, delay)
-                    6  -> {
-                        val x1 = x1Arg.toFloatOrNull(); val y1 = y1Arg.toFloatOrNull()
-                        val x2 = x2Arg.toFloatOrNull(); val y2 = y2Arg.toFloatOrNull()
-                        if (x1 != null && y1 != null && x2 != null && y2 != null) Step.SwipeCoords(
-                            x1, y1, x2, y2,
-                            swipeDurArg.toLongOrNull() ?: 300L,
-                            delay
-                        ) else null
-                    }
+                    6  -> { val x1 = x1Arg.toFloatOrNull(); val y1 = y1Arg.toFloatOrNull()
+                            val x2 = x2Arg.toFloatOrNull(); val y2 = y2Arg.toFloatOrNull()
+                            if (x1 != null && y1 != null && x2 != null && y2 != null)
+                                Step.SwipeCoords(x1, y1, x2, y2, displayToMs(swDurVal, swDurUnit), delay) else null }
                     7  -> if (textArg.isNotBlank()) Step.PressKey(textArg, delay) else null
                     8  -> if (textArg.isNotBlank()) Step.LaunchApp(textArg, delay) else null
-                    9  -> Step.WatchCorners(intArg.toIntOrNull() ?: 25, delay)
-                    10 -> if (textArg.isNotBlank()) Step.TapWhen(textArg, intArg.toIntOrNull() ?: 30, delay) else null
-                    11 -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank())
-                              Step.CheckBranch(textArg, branchSeqArg, delay) else null
+                    9  -> Step.WatchCorners(displayToSecs(toutVal, toutUnit).toInt().coerceAtLeast(1), delay)
+                    10 -> if (textArg.isNotBlank()) Step.TapWhen(textArg, displayToSecs(toutVal, toutUnit).toInt().coerceAtLeast(1), delay) else null
+                    11 -> if (textArg.isNotBlank() && branchSeqArg.isNotBlank()) Step.CheckBranch(textArg, branchSeqArg, delay) else null
                     12 -> Step.PressBack(delay)
                     13 -> Step.PressHome(delay)
                     14 -> Step.DismissAd(delay)

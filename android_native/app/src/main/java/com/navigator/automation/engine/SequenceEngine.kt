@@ -65,8 +65,6 @@ class SequenceEngine(
 
             for ((idx, step) in sequence.steps.withIndex()) {
                 if (stopped) break
-
-                // Pause check
                 while (paused && !stopped) delay(200)
                 if (stopped) break
 
@@ -86,27 +84,31 @@ class SequenceEngine(
     private suspend fun runStep(svc: AutomationAccessibilityService, step: Step) {
         when (step) {
             is Step.TapText -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 withContext(Dispatchers.Default) {
                     val node = retryFind(svc, step.text)
                     if (node != null) svc.tapNode(node)
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
-            is Step.TapCoords -> withContext(Dispatchers.Default) {
-                if (step.delayMs > 0) delay(step.delayMs)
-                repeat(step.repeatCount) { i ->
-                    svc.tapCoords(step.x, step.y)
-                    if (i < step.repeatCount - 1) delay(100)
+            is Step.TapCoords -> {
+                withContext(Dispatchers.Default) {
+                    repeat(step.repeatCount) { i ->
+                        svc.tapCoords(step.x, step.y)
+                        if (i < step.repeatCount - 1) delay(100)
+                    }
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
-            is Step.LongPress -> withContext(Dispatchers.Default) {
-                if (step.delayMs > 0) delay(step.delayMs)
-                repeat(step.repeatCount) { i ->
-                    svc.longPress(step.x, step.y, step.durationMs)
-                    if (i < step.repeatCount - 1) delay(200)
+            is Step.LongPress -> {
+                withContext(Dispatchers.Default) {
+                    repeat(step.repeatCount) { i ->
+                        svc.longPress(step.x, step.y, step.durationMs)
+                        if (i < step.repeatCount - 1) delay(200)
+                    }
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.WaitSeconds -> {
@@ -114,42 +116,45 @@ class SequenceEngine(
                 if (step.delayMs > 0) delay(step.delayMs)
             }
 
-            is Step.TypeText -> withContext(Dispatchers.Default) {
+            is Step.TypeText -> {
+                withContext(Dispatchers.Default) { svc.typeText(step.text) }
                 if (step.delayMs > 0) delay(step.delayMs)
-                svc.typeText(step.text)
             }
 
-            is Step.Swipe -> withContext(Dispatchers.Default) {
+            is Step.Swipe -> {
+                withContext(Dispatchers.Default) { svc.swipe(step.direction) }
                 if (step.delayMs > 0) delay(step.delayMs)
-                svc.swipe(step.direction)
             }
 
-            is Step.SwipeCoords -> withContext(Dispatchers.Default) {
-                if (step.delayMs > 0) delay(step.delayMs)
-                svc.swipeCoords(step.x1, step.y1, step.x2, step.y2, step.durationMs)
-            }
-
-            is Step.PressKey -> withContext(Dispatchers.Default) {
-                if (step.delayMs > 0) delay(step.delayMs)
-                when (step.key.lowercase()) {
-                    "back"   -> svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-                    "home"   -> svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
-                    "recent", "recents" ->
-                        svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
-                    "notifications" ->
-                        svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
-                    else -> {}
+            is Step.SwipeCoords -> {
+                withContext(Dispatchers.Default) {
+                    svc.swipeCoords(step.x1, step.y1, step.x2, step.y2, step.durationMs)
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
+            }
+
+            is Step.PressKey -> {
+                withContext(Dispatchers.Default) {
+                    when (step.key.lowercase()) {
+                        "back"   -> svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                        "home"   -> svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+                        "recent", "recents" ->
+                            svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_RECENTS)
+                        "notifications" ->
+                            svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS)
+                        else -> {}
+                    }
+                }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.LaunchApp -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 withContext(Dispatchers.Default) { svc.launchApp(step.target) }
-                delay(3500) // let the app finish loading before next step
+                delay(3500) // let app load before next step
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.TapWhen -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 val deadline = System.currentTimeMillis() + step.timeoutSeconds * 1_000L
                 while (System.currentTimeMillis() < deadline && !stopped) {
                     val node = withContext(Dispatchers.Default) { svc.findNodeByText(step.text) }
@@ -159,10 +164,10 @@ class SequenceEngine(
                     }
                     delay(500)
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.WatchCorners -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 val deadline = System.currentTimeMillis() + step.timeoutSeconds * 1_000L
                 var found = false
                 while (System.currentTimeMillis() < deadline && !stopped) {
@@ -174,22 +179,20 @@ class SequenceEngine(
                     }
                     delay(500)
                 }
-                if (!found) {
-                    svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
-                }
+                if (!found) svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.DismissAd -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 withContext(Dispatchers.Default) {
                     val node = svc.findDismissNode()
                     if (node != null) svc.tapNode(node)
                     else svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.CheckBranch -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 val triggered = withContext(Dispatchers.Default) {
                     svc.findNodeByText(step.triggerText) != null
                 }
@@ -204,21 +207,21 @@ class SequenceEngine(
                         }
                     }
                 }
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.PressBack -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_BACK)
+                if (step.delayMs > 0) delay(step.delayMs)
             }
 
             is Step.PressHome -> {
-                if (step.delayMs > 0) delay(step.delayMs)
                 svc.performGlobalAction(android.accessibilityservice.AccessibilityService.GLOBAL_ACTION_HOME)
+                if (step.delayMs > 0) delay(step.delayMs)
             }
         }
     }
 
-    /** Try to find a node by text up to 5 times with 600 ms between attempts. */
     private suspend fun retryFind(
         svc: AutomationAccessibilityService,
         text: String,
